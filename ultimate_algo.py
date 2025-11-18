@@ -1,4 +1,4 @@
-# INSTITUTIONAL PRESSURE MASTER ALGO - USING YOUR ANGLE ONE SETUP
+# INSTITUTIONAL PRESSURE MASTER ALGO - DEBUG VERSION
 import os
 import time
 import requests
@@ -49,19 +49,19 @@ feedToken = client.getfeedToken()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# --------- INSTITUTIONAL PRESSURE THRESHOLDS ---------
+# --------- EASIER THRESHOLDS FOR TESTING ---------
 INSTITUTIONAL_THRESHOLDS = {
     "SENSEX": {
-        "1m": {"min_points": 30, "volume_surge": 1.8, "range_expansion": 25, "efficiency_ratio": 1.3},
-        "5m": {"min_points": 45, "volume_surge": 2.0, "range_expansion": 35, "efficiency_ratio": 1.5}
+        "1m": {"min_points": 15, "volume_surge": 1.3, "range_expansion": 10, "efficiency_ratio": 1.1},
+        "5m": {"min_points": 25, "volume_surge": 1.5, "range_expansion": 15, "efficiency_ratio": 1.2}
     },
     "BANKNIFTY": {
-        "1m": {"min_points": 35, "volume_surge": 1.9, "range_expansion": 30, "efficiency_ratio": 1.4},
-        "5m": {"min_points": 50, "volume_surge": 2.2, "range_expansion": 40, "efficiency_ratio": 1.6}
+        "1m": {"min_points": 20, "volume_surge": 1.4, "range_expansion": 12, "efficiency_ratio": 1.1},
+        "5m": {"min_points": 30, "volume_surge": 1.6, "range_expansion": 18, "efficiency_ratio": 1.3}
     },
     "NIFTY": {
-        "1m": {"min_points": 25, "volume_surge": 1.7, "range_expansion": 20, "efficiency_ratio": 1.3},
-        "5m": {"min_points": 40, "volume_surge": 1.9, "range_expansion": 30, "efficiency_ratio": 1.5}
+        "1m": {"min_points": 12, "volume_surge": 1.2, "range_expansion": 8, "efficiency_ratio": 1.1},
+        "5m": {"min_points": 20, "volume_surge": 1.4, "range_expansion": 12, "efficiency_ratio": 1.2}
     }
 }
 
@@ -90,6 +90,27 @@ def send_telegram(msg, reply_to=None):
         return r.get("result", {}).get("message_id")
     except:
         return None
+
+# --------- DEBUG FUNCTION ---------
+def quick_debug():
+    print(f"\n" + "="*50)
+    print(f"🕒 DEBUG TIME: {(datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')}")
+    print(f"📈 MARKET OPEN: {is_market_open()}")
+    print(f"🛑 STOP TRADING: {should_stop_trading()}")
+    
+    # Test data fetching
+    indices = ["NIFTY", "BANKNIFTY", "SENSEX"]
+    for index in indices:
+        try:
+            df = fetch_index_data(index, "5m", "1d")
+            if df is not None and not df.empty:
+                price = df.iloc[-1]['Close']
+                print(f"✅ {index}: ₹{price} (Candles: {len(df)})")
+            else:
+                print(f"❌ {index}: NO DATA")
+        except Exception as e:
+            print(f"❌ {index}: ERROR - {str(e)}")
+    print("="*50 + "\n")
 
 # --------- KEEP YOUR EXISTING MARKET HOURS ---------
 def is_market_open():
@@ -131,8 +152,12 @@ def fetch_index_data(index, interval="5m", period="2d"):
         "BANKNIFTY": "^NSEBANK", 
         "SENSEX": "^BSESN"
     }
-    df = yf.download(symbol_map[index], period=period, interval=interval, auto_adjust=True, progress=False)
-    return None if df.empty else df
+    try:
+        df = yf.download(symbol_map[index], period=period, interval=interval, auto_adjust=True, progress=False)
+        return None if df.empty else df
+    except Exception as e:
+        print(f"📊 DATA FETCH ERROR for {index}: {e}")
+        return None
 
 def ensure_series(data):
     return data.iloc[:,0] if isinstance(data, pd.DataFrame) else data.squeeze()
@@ -218,6 +243,7 @@ class InstitutionalPressureAnalyzer:
         """MAIN INSTITUTIONAL PRESSURE ANALYSIS"""
         try:
             if len(df) < 10:
+                print(f"📊 {index} {timeframe}: Not enough data ({len(df)} candles)")
                 return None
             
             # Get current candle data
@@ -235,16 +261,24 @@ class InstitutionalPressureAnalyzer:
             # Calculate candle move
             candle_move = abs(current_close - current_open)
             
+            # DEBUG PRINT
+            print(f"📊 {index} {timeframe}: Move={candle_move:.1f}, Need={min_points}")
+            
             # Skip if below institutional threshold
             if candle_move < min_points:
+                print(f"❌ {index} {timeframe}: Move too small")
                 return None
             
             # Calculate institutional metrics
             metrics = self.calculate_institutional_metrics(df, current_open, current_high, current_low, current_close, current_volume)
             
+            # DEBUG METRICS
+            print(f"📊 {index} {timeframe}: Volume={metrics['volume_surge_ratio']:.1f}x, Eff={metrics['efficiency_ratio']:.1f}x, Range={metrics['range_expansion']:.1f}%")
+            
             # Check if meets institutional criteria
             if self.is_institutional_signal(metrics, thresholds):
                 direction = "CE" if current_close > current_open else "PE"
+                print(f"🎯 {index} {timeframe}: INSTITUTIONAL SIGNAL DETECTED - {direction}")
                 return {
                     'direction': direction,
                     'points_moved': round(candle_move, 2),
@@ -252,6 +286,8 @@ class InstitutionalPressureAnalyzer:
                     'timeframe': timeframe,
                     'index_price': current_close
                 }
+            else:
+                print(f"❌ {index} {timeframe}: Metrics don't meet thresholds")
             
             return None
             
@@ -425,6 +461,8 @@ def clear_completed_signal(signal_id):
 def analyze_index_signal(index):
     """Analyze both 1min and 5min timeframes for institutional pressure"""
     analyzer = InstitutionalPressureAnalyzer()
+    
+    print(f"🔍 Analyzing {index} for signals...")
     
     # Check 1min data first
     df1 = fetch_index_data(index, "1m", "1d")
@@ -733,13 +771,16 @@ def run_algo_parallel():
     for t in threads: 
         t.join()
 
-# --------- KEEP YOUR EXISTING MAIN LOOP STRUCTURE ---------
+# --------- UPDATED MAIN LOOP WITH DEBUGGING ---------
 while True:
     try:
         utc_now = datetime.utcnow()
         ist_now = utc_now + timedelta(hours=5, minutes=30)
         current_time_ist = ist_now.time()
         current_datetime_ist = ist_now
+        
+        # RUN DEBUG DIAGNOSTICS
+        quick_debug()
         
         market_open = is_market_open()
         
@@ -762,9 +803,9 @@ while True:
         
         if not STARTED_SENT:
             send_telegram("🚀 INSTITUTIONAL PRESSURE ALGO STARTED\n"
-                         "✅ SENSEX: 30+ points, 1.8x volume\n"
-                         "✅ BANKNIFTY: 35+ points, 1.9x volume\n" 
-                         "✅ NIFTY: 25+ points, 1.7x volume\n"
+                         "✅ SENSEX: 15+ points, 1.3x volume\n"
+                         "✅ BANKNIFTY: 20+ points, 1.4x volume\n" 
+                         "✅ NIFTY: 12+ points, 1.2x volume\n"
                          "✅ Smart Monitoring: 2min(1m) / 5min(5m)\n"
                          "✅ 1 Rupee Increments\n"
                          "✅ Institutional Accuracy Targets")

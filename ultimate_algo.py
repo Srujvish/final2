@@ -1,4 +1,3 @@
-# INSTITUTIONAL PRESSURE MASTER ALGO - PROFESSIONAL TG FORMAT
 import os
 import time
 import requests
@@ -15,66 +14,99 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
-# ---------------- CONFIGURATION ----------------
+# ---------------- CONFIG ----------------
 OPENING_PLAY_ENABLED = True
 OPENING_START = dtime(9,15)
 OPENING_END = dtime(9,45)
 
+EXPIRY_ACTIONABLE = True
+EXPIRY_INFO_ONLY = False
+GAMMA_VOL_SPIKE_THRESHOLD = 2.0
+DELTA_OI_RATIO = 2.0
+MOMENTUM_VOL_AMPLIFIER = 1.5
+
+# STRONGER CONFIRMATION THRESHOLDS
+VCP_CONTRACTION_RATIO = 0.6
+FAULTY_BASE_BREAK_THRESHOLD = 0.25
+WYCKOFF_VOLUME_SPRING = 2.2
+LIQUIDITY_SWEEP_DISTANCE = 0.005
+PEAK_REJECTION_WICK_RATIO = 0.8
+FVG_GAP_THRESHOLD = 0.0025
+VOLUME_GAP_IMBALANCE = 2.5
+OTE_RETRACEMENT_LEVELS = [0.618, 0.786]
+DEMAND_SUPPLY_ZONE_LOOKBACK = 20
+
+# --------- EXPIRIES FOR SELECTED INDICES ---------
 EXPIRIES = {
     "NIFTY": "18 NOV 2025",
     "BANKNIFTY": "25 NOV 2025", 
-    "SENSEX": "20 NOV 2025"
+    "SENSEX": "13 NOV 2025",
+    "MIDCPNIFTY": "25 NOV 2025"
 }
 
-# Angel One Login
+# --------- SELECTED STRATEGIES ---------
+STRATEGY_NAMES = {
+    "institutional_price_action": "INSTITUTIONAL PRICE ACTION",
+    "opening_play": "OPENING PLAY", 
+    "gamma_squeeze": "GAMMA SQUEEZE",
+    "liquidity_sweeps": "LIQUIDITY SWEEP",
+    "volume_gap_imbalance": "VOLUME GAP IMBALANCE",
+    "ote_retracement": "OTE RETRACEMENT", 
+    "demand_supply_zones": "DEMAND SUPPLY ZONES",
+    "pullback_reversal": "PULLBACK REVERSAL",
+    "liquidity_zone": "LIQUIDITY ZONE"
+}
+
+# --------- SIGNAL MANAGEMENT ---------
+daily_signals = []
+signal_counter = 0
+all_generated_signals = []
+signaled_strikes = {}
+active_trades = {}
+
+# 🚨 CRITICAL: SIGNAL QUEUE SYSTEM
+signal_queue_active = False
+current_signal_data = None
+last_signal_time = 0
+SIGNAL_TIMEOUT = 300  # 5 minutes
+last_activity_time = 0
+
+# 🚨 CRITICAL: Global stop flag
+stop_all_monitoring = False
+
+# --------- ANGEL ONE LOGIN ---------
 API_KEY = os.getenv("API_KEY")
 CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
 TOTP_SECRET = os.getenv("TOTP_SECRET")
 TOTP = pyotp.TOTP(TOTP_SECRET).now()
 
-client = SmartConnect(api_key=API_KEY)
-session = client.generateSession(CLIENT_CODE, PASSWORD, TOTP)
-feedToken = client.getfeedToken()
+try:
+    client = SmartConnect(api_key=API_KEY)
+    session = client.generateSession(CLIENT_CODE, PASSWORD, TOTP)
+    feedToken = client.getfeedToken()
+except Exception as e:
+    print(f"Login failed: {e}")
 
-# Telegram
+# --------- TELEGRAM ---------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# --------- INSTITUTIONAL THRESHOLDS ---------
-INSTITUTIONAL_THRESHOLDS = {
-    "SENSEX": {
-        "1m": {"min_points": 15, "volume_surge": 1.3, "range_expansion": 10, "efficiency_ratio": 1.1},
-        "5m": {"min_points": 25, "volume_surge": 1.5, "range_expansion": 15, "efficiency_ratio": 1.2}
-    },
-    "BANKNIFTY": {
-        "1m": {"min_points": 20, "volume_surge": 1.4, "range_expansion": 12, "efficiency_ratio": 1.1},
-        "5m": {"min_points": 30, "volume_surge": 1.6, "range_expansion": 18, "efficiency_ratio": 1.3}
-    },
-    "NIFTY": {
-        "1m": {"min_points": 12, "volume_surge": 1.2, "range_expansion": 8, "efficiency_ratio": 1.1},
-        "5m": {"min_points": 20, "volume_surge": 1.4, "range_expansion": 12, "efficiency_ratio": 1.2}
-    }
-}
-
-# --------- SIGNAL TRACKING ---------
-active_signals = {}
-signal_cooldown = {"1m": 120, "5m": 300}
-signal_counter = 0
-all_generated_signals = []
-daily_signals = []
-
 STARTED_SENT = False
+STOP_SENT = False
+EOD_REPORT_SENT = False
+MARKET_CLOSED_SENT = False
 
 def send_telegram(msg, reply_to=None):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+        payload = {"chat_id": CHAT_ID, "text": msg}
         if reply_to:
             payload["reply_to_message_id"] = reply_to
-        r = requests.post(url, data=payload, timeout=5).json()
+        r = requests.post(url, data=payload, timeout=10).json()
         return r.get("result", {}).get("message_id")
-    except:
+    except Exception as e:
+        print(f"Telegram error: {e}")
         return None
 
 # --------- MARKET HOURS ---------
@@ -90,48 +122,63 @@ def should_stop_trading():
     current_time_ist = ist_now.time()
     return current_time_ist >= dtime(15,30)
 
-# --------- DATA FETCHING ---------
+# --------- STRIKE ROUNDING WITH ONE-STEP AWAY ---------
+def round_strike(index, price):
+    try:
+        if price is None:
+            return None
+        if isinstance(price, float) and math.isnan(price):
+            return None
+        price = float(price)
+        
+        if index == "NIFTY": 
+            nearest = int(round(price / 50.0) * 50)
+            # One step away - if index at 26790, return 26850 instead of 26800
+            if abs(nearest - price) <= 25:  # Very close to strike
+                return nearest + 50 if nearest >= price else nearest - 50
+            return nearest
+            
+        elif index == "BANKNIFTY": 
+            nearest = int(round(price / 100.0) * 100)
+            if abs(nearest - price) <= 50:
+                return nearest + 100 if nearest >= price else nearest - 100
+            return nearest
+            
+        elif index == "SENSEX": 
+            nearest = int(round(price / 100.0) * 100)
+            if abs(nearest - price) <= 50:
+                return nearest + 100 if nearest >= price else nearest - 100
+            return nearest
+            
+        elif index == "MIDCPNIFTY": 
+            nearest = int(round(price / 25.0) * 25)
+            if abs(nearest - price) <= 12.5:
+                return nearest + 25 if nearest >= price else nearest - 25
+            return nearest
+            
+    except Exception:
+        return None
+    return None
+
+# --------- ENSURE SERIES ---------
+def ensure_series(data):
+    return data.iloc[:,0] if isinstance(data, pd.DataFrame) else data.squeeze()
+
+# --------- FETCH INDEX DATA FOR SELECTED INDICES ---------
 def fetch_index_data(index, interval="5m", period="2d"):
     symbol_map = {
         "NIFTY": "^NSEI", 
         "BANKNIFTY": "^NSEBANK", 
-        "SENSEX": "^BSESN"
+        "SENSEX": "^BSESN",
+        "MIDCPNIFTY": "NIFTY_MID_SELECT.NS"
     }
     try:
         df = yf.download(symbol_map[index], period=period, interval=interval, auto_adjust=True, progress=False)
         return None if df.empty else df
-    except Exception as e:
-        print(f"Data fetch error for {index}: {e}")
+    except:
         return None
 
-# --------- STRIKE CALCULATION ---------
-def round_strike(index, price):
-    try:
-        price = float(price)
-        if index == "NIFTY": return int(round(price / 50.0) * 50)
-        elif index == "BANKNIFTY": return int(round(price / 100.0) * 100)
-        elif index == "SENSEX": return int(round(price / 100.0) * 100)
-        else: return int(round(price / 50.0) * 50)
-    except: return None
-
-# --------- OPTION SYMBOL GENERATION ---------
-def get_option_symbol(index, expiry_str, strike, opttype):
-    try:
-        dt = datetime.strptime(expiry_str, "%d %b %Y")
-        
-        if index == "SENSEX":
-            year_short = dt.strftime("%y")
-            month_code = dt.strftime("%b").upper()
-            symbol = f"SENSEX{year_short}{month_code}{strike}{opttype}"
-        else:
-            symbol = f"{index}{dt.strftime('%d%b%y').upper()}{strike}{opttype}"
-        
-        return symbol
-    except Exception as e:
-        print(f"Error generating symbol: {e}")
-        return None
-
-# --------- TOKEN MAPPING ---------
+# --------- LOAD TOKEN MAP ---------
 def load_token_map():
     try:
         url="https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
@@ -145,494 +192,923 @@ def load_token_map():
 
 token_map=load_token_map()
 
-def fetch_option_price(symbol, retries=3, delay=3):
+# --------- SAFE LTP FETCH ---------
+def fetch_option_price(symbol, retries=2, delay=2):
     token=token_map.get(symbol.upper())
-    if not token: return None
+    if not token:
+        return None
     for _ in range(retries):
         try:
             exchange = "BFO" if "SENSEX" in symbol.upper() else "NFO"
             data=client.ltpData(exchange, symbol, token)
             return float(data['data']['ltp'])
-        except: time.sleep(delay)
+        except:
+            time.sleep(delay)
     return None
 
-# --------- ENHANCED INSTITUTIONAL ANALYZER ---------
-class InstitutionalPressureAnalyzer:
-    def __init__(self):
-        self.analyzed_candles = set()
+# --------- DETECT LIQUIDITY ZONE ---------
+def detect_liquidity_zone(df, lookback=20):
+    high_series = ensure_series(df['High']).dropna()
+    low_series = ensure_series(df['Low']).dropna()
+    try:
+        if len(high_series) <= lookback:
+            high_pool = float(high_series.max()) if len(high_series)>0 else float('nan')
+        else:
+            high_pool = float(high_series.rolling(lookback).max().iloc[-2])
+    except Exception:
+        high_pool = float(high_series.max()) if len(high_series)>0 else float('nan')
+    try:
+        if len(low_series) <= lookback:
+            low_pool = float(low_series.min()) if len(low_series)>0 else float('nan')
+        else:
+            low_pool = float(low_series.rolling(lookback).min().iloc[-2])
+    except Exception:
+        low_pool = float(low_series.min()) if len(low_series)>0 else float('nan')
+
+    if math.isnan(high_pool) and len(high_series)>0:
+        high_pool = float(high_series.max())
+    if math.isnan(low_pool) and len(low_series)>0:
+        low_pool = float(low_series.min())
+
+    return round(high_pool,0), round(low_pool,0)
+
+# --------- INSTITUTIONAL LIQUIDITY HUNT ---------
+def institutional_liquidity_hunt(index, df):
+    prev_high = None
+    prev_low = None
+    try:
+        prev_high_val = ensure_series(df['High']).iloc[-2]
+        prev_low_val = ensure_series(df['Low']).iloc[-2]
+        prev_high = float(prev_high_val) if not (isinstance(prev_high_val,float) and math.isnan(prev_high_val)) else None
+        prev_low = float(prev_low_val) if not (isinstance(prev_low_val,float) and math.isnan(prev_low_val)) else None
+    except Exception:
+        prev_high = None
+        prev_low = None
+
+    high_zone, low_zone = detect_liquidity_zone(df, lookback=15)
+
+    last_close_val = None
+    try:
+        lc = ensure_series(df['Close']).iloc[-1]
+        if isinstance(lc, float) and math.isnan(lc):
+            last_close_val = None
+        else:
+            last_close_val = float(lc)
+    except Exception:
+        last_close_val = None
+
+    if last_close_val is None:
+        highest_ce_oi_strike = None
+        highest_pe_oi_strike = None
+    else:
+        highest_ce_oi_strike = round_strike(index, last_close_val + 100)
+        highest_pe_oi_strike = round_strike(index, last_close_val - 100)
+
+    bull_liquidity = []
+    if prev_low is not None: bull_liquidity.append(prev_low)
+    if low_zone is not None: bull_liquidity.append(low_zone)
+    if highest_pe_oi_strike is not None: bull_liquidity.append(highest_pe_oi_strike)
+
+    bear_liquidity = []
+    if prev_high is not None: bear_liquidity.append(prev_high)
+    if high_zone is not None: bear_liquidity.append(high_zone)
+    if highest_ce_oi_strike is not None: bear_liquidity.append(highest_ce_oi_strike)
+
+    return bull_liquidity, bear_liquidity
+
+def liquidity_zone_entry_check(price, bull_liq, bear_liq):
+    if price is None or (isinstance(price, float) and math.isnan(price)):
+        return None
+
+    for zone in bull_liq:
+        if zone is None: continue
+        try:
+            if abs(price - zone) <= 10:  # Slightly wider zone for better entries
+                return "CE"
+        except:
+            continue
+    for zone in bear_liq:
+        if zone is None: continue
+        try:
+            if abs(price - zone) <= 10:
+                return "PE"
+        except:
+            continue
+
+    return None
+
+# 🚨 INSTITUTIONAL PRICE ACTION LAYER 🚨
+def institutional_price_action_signal(df):
+    try:
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        close = ensure_series(df['Close'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 10:
+            return None
+            
+        recent_high = high.iloc[-8:-1].max()
+        recent_low = low.iloc[-8:-1].min()
+        current_close = close.iloc[-1]
+        
+        vol_avg = volume.rolling(10).mean().iloc[-1]
+        current_vol = volume.iloc[-1]
+        
+        # Strong institutional breakout
+        if (current_close > recent_high and 
+            current_vol > vol_avg * 2.0 and
+            current_close > close.iloc[-2] and
+            close.iloc[-2] > close.iloc[-3]):
+            return "CE"
+            
+        if (current_close < recent_low and
+            current_vol > vol_avg * 2.0 and
+            current_close < close.iloc[-2] and
+            close.iloc[-2] < close.iloc[-3]):
+            return "PE"
+            
+        current_body = abs(close.iloc[-1] - close.iloc[-2])
+        upper_wick = high.iloc[-1] - max(close.iloc[-1], close.iloc[-2])
+        lower_wick = min(close.iloc[-1], close.iloc[-2]) - low.iloc[-1]
+        
+        # Strong rejection patterns
+        if (upper_wick > current_body * 2.0 and
+            current_vol > vol_avg * 1.8 and
+            close.iloc[-1] < close.iloc[-2]):
+            return "PE"
+            
+        if (lower_wick > current_body * 2.0 and
+            current_vol > vol_avg * 1.8 and
+            close.iloc[-1] > close.iloc[-2]):
+            return "CE"
+            
+    except Exception:
+        return None
+    return None
+
+# 🚨 INSTITUTIONAL MOMENTUM CONFIRMATION 🚨
+def institutional_momentum_confirmation(index, df, proposed_signal):
+    try:
+        close = ensure_series(df['Close'])
+        volume = ensure_series(df['Volume'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        
+        if len(close) < 5:
+            return False
+            
+        if proposed_signal == "CE":
+            if not (close.iloc[-1] > close.iloc[-2] and close.iloc[-2] > close.iloc[-3]):
+                return False
+            if volume.iloc[-1] < volume.rolling(10).mean().iloc[-1] * 1.3:
+                return False
+                
+        elif proposed_signal == "PE":
+            if not (close.iloc[-1] < close.iloc[-2] and close.iloc[-2] < close.iloc[-3]):
+                return False
+            if volume.iloc[-1] < volume.rolling(10).mean().iloc[-1] * 1.3:
+                return False
+                
+        return True
+        
+    except Exception:
+        return False
+
+# 🚨 PRIORITY 1: OPENING-RANGE INSTITUTIONAL PLAY 🚨
+def institutional_opening_play(index, df):
+    try:
+        prev_high = float(ensure_series(df['High']).iloc[-2])
+        prev_low = float(ensure_series(df['Low']).iloc[-2])
+        prev_close = float(ensure_series(df['Close']).iloc[-2])
+        current_price = float(ensure_series(df['Close']).iloc[-1])
+    except Exception:
+        return None
+        
+    volume = ensure_series(df['Volume'])
+    vol_avg = volume.rolling(8).mean().iloc[-1] if len(volume) >= 8 else volume.mean()
+    vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg > 0 else 1)
     
-    def safe_float(self, value):
-        try:
-            if hasattr(value, 'item'): return float(value.item())
-            elif hasattr(value, 'iloc'): return float(value.iloc[0])
-            else: return float(value)
-        except: return 0.0
+    # Strong opening breakouts
+    if current_price > prev_high + 20 and vol_ratio > 1.5: return "CE"
+    if current_price < prev_low - 20 and vol_ratio > 1.5: return "PE"
+    if current_price > prev_close + 30 and vol_ratio > 1.4: return "CE"
+    if current_price < prev_close - 30 and vol_ratio > 1.4: return "PE"
+    return None
 
-    def safe_int(self, value):
-        try:
-            if hasattr(value, 'item'): return int(value.item())
-            elif hasattr(value, 'iloc'): return int(value.iloc[0])
-            else: return int(value)
-        except: return 0
+# 🚨 GAMMA SQUEEZE / EXPIRY LAYER 🚨
+def is_expiry_day_for_index(index):
+    try:
+        ex = EXPIRIES.get(index)
+        if not ex: return False
+        dt = datetime.strptime(ex, "%d %b %Y")
+        today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
+        return dt.date() == today
+    except Exception:
+        return False
 
-    def analyze_previous_candles(self, df, num_candles=3):
-        """Analyze previous candles for context"""
-        previous_data = []
-        for i in range(2, 2 + num_candles):
-            if len(df) >= i:
-                row = df.iloc[-i]
-                prev_open = self.safe_float(row['Open'])
-                prev_high = self.safe_float(row['High'])
-                prev_low = self.safe_float(row['Low'])
-                prev_close = self.safe_float(row['Close'])
-                prev_volume = self.safe_int(row['Volume'])
-                
-                direction = "GREEN" if prev_close > prev_open else "RED"
-                points_moved = abs(prev_close - prev_open)
-                candle_range = prev_high - prev_low
-                
-                previous_data.append({
-                    'timestamp': row.name.strftime('%H:%M:%S') if hasattr(row.name, 'strftime') else str(row.name),
-                    'direction': direction,
-                    'points_moved': round(points_moved, 2),
-                    'open': round(prev_open, 2),
-                    'high': round(prev_high, 2),
-                    'low': round(prev_low, 2),
-                    'close': round(prev_close, 2),
-                    'range': round(candle_range, 2),
-                    'volume': prev_volume
-                })
-        return previous_data
-
-    def calculate_institutional_score(self, metrics):
-        """Calculate institutional score 0-100"""
-        score = 0
+def detect_gamma_squeeze(index, df):
+    try:
+        close = ensure_series(df['Close']); volume = ensure_series(df['Volume']); 
+        high = ensure_series(df['High']); low = ensure_series(df['Low'])
+        if len(close) < 6: return None
         
-        # Volume surge (max 30 points)
-        if metrics['volume_surge_ratio'] >= 2.0: score += 30
-        elif metrics['volume_surge_ratio'] >= 1.5: score += 20
-        elif metrics['volume_surge_ratio'] >= 1.2: score += 10
+        vol_avg = volume.rolling(15).mean().iloc[-1] if len(volume)>=15 else volume.mean()
+        vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg>0 else 1)
+        speed = (close.iloc[-1] - close.iloc[-3]) / (abs(close.iloc[-3]) + 1e-6)
         
-        # Efficiency (max 25 points)
-        if metrics['efficiency_ratio'] >= 1.5: score += 25
-        elif metrics['efficiency_ratio'] >= 1.2: score += 15
-        elif metrics['efficiency_ratio'] >= 1.0: score += 5
-        
-        # Range expansion (max 20 points)
-        if metrics['range_expansion'] >= 20: score += 20
-        elif metrics['range_expansion'] >= 10: score += 10
-        elif metrics['range_expansion'] >= 5: score += 5
-        
-        # Momentum (max 25 points)
-        if metrics['momentum_pressure'] == "STRONG": score += 25
-        elif metrics['momentum_pressure'] == "MODERATE": score += 15
-        
-        return min(score, 100)
-
-    def get_pressure_type(self, score):
-        if score >= 80: return "HEAVY_INSTITUTIONAL"
-        elif score >= 60: return "MODERATE_INSTITUTIONAL" 
-        elif score >= 40: return "LIGHT_INSTITUTIONAL"
-        else: return "RETAIL_VOLATILITY"
-
-    def get_confidence_level(self, score):
-        if score >= 70: return "HIGH"
-        elif score >= 50: return "MEDIUM"
-        else: return "LOW"
-
-    def analyze_institutional_pressure(self, index, df, timeframe):
-        """MAIN INSTITUTIONAL PRESSURE ANALYSIS"""
-        try:
-            if len(df) < 10: return None
-            
-            current_row = df.iloc[-1]
-            current_open = self.safe_float(current_row['Open'])
-            current_high = self.safe_float(current_row['High'])
-            current_low = self.safe_float(current_row['Low'])
-            current_close = self.safe_float(current_row['Close'])
-            current_volume = self.safe_int(current_row['Volume'])
-            
-            thresholds = INSTITUTIONAL_THRESHOLDS[index][timeframe]
-            candle_move = abs(current_close - current_open)
-            
-            if candle_move < thresholds["min_points"]: return None
-            
-            # Calculate metrics
-            metrics = self.calculate_institutional_metrics(df, current_open, current_high, current_low, current_close, current_volume)
-            
-            if self.is_institutional_signal(metrics, thresholds):
-                direction = "CE" if current_close > current_open else "PE"
-                tg_direction = "GREEN" if current_close > current_open else "RED"
-                
-                # Calculate institutional score
-                institutional_score = self.calculate_institutional_score(metrics)
-                pressure_type = self.get_pressure_type(institutional_score)
-                confidence = self.get_confidence_level(institutional_score)
-                
-                # Get previous candles analysis
-                previous_candles = self.analyze_previous_candles(df, 3)
-                
-                return {
-                    'direction': direction,
-                    'tg_direction': tg_direction,
-                    'points_moved': round(candle_move, 2),
-                    'candle_range': round(current_high - current_low, 2),
-                    'volume': current_volume,
-                    'metrics': metrics,
-                    'timeframe': timeframe,
-                    'index_price': current_close,
-                    'timestamp': current_row.name.strftime('%H:%M:%S') if hasattr(current_row.name, 'strftime') else str(current_row.name),
-                    'institutional_score': institutional_score,
-                    'pressure_type': pressure_type,
-                    'confidence': confidence,
-                    'previous_candles': previous_candles
-                }
-            
-            return None
-            
-        except Exception as e:
-            print(f"Institutional analysis error: {e}")
-            return None
-
-    def calculate_institutional_metrics(self, df, curr_open, curr_high, curr_low, curr_close, curr_volume):
-        """Calculate institutional pressure metrics"""
-        try:
-            prev_rows = []
-            for i in range(2, 7):
-                if len(df) >= i: prev_rows.append(df.iloc[-i])
-            
-            prev_volumes = [self.safe_int(row['Volume']) for row in prev_rows]
-            prev_closes = [self.safe_float(row['Close']) for row in prev_rows]
-            prev_ranges_pct = []
-            
-            for row in prev_rows:
-                prev_open = self.safe_float(row['Open'])
-                prev_high = self.safe_float(row['High'])
-                prev_low = self.safe_float(row['Low'])
-                if prev_open > 0:
-                    range_pct = (prev_high - prev_low) / prev_open * 100
-                    prev_ranges_pct.append(range_pct)
-            
-            # Volume Analysis
-            base_volume = 50000
-            if curr_volume == 0:
-                movement_intensity = abs(curr_close - curr_open) / curr_open * 100 if curr_open > 0 else 0
-                curr_volume = int(base_volume * (1 + movement_intensity * 8))
-            
-            avg_prev_volume = np.mean(prev_volumes) if prev_volumes else base_volume
-            volume_surge_ratio = round(curr_volume / max(1, avg_prev_volume), 2)
-            
-            # Price Efficiency
-            current_efficiency = abs(curr_close - curr_open) / (curr_high - curr_low) if (curr_high - curr_low) > 0 else 0
-            prev_efficiencies = []
-            
-            for row in prev_rows:
-                prev_open = self.safe_float(row['Open'])
-                prev_high = self.safe_float(row['High'])
-                prev_low = self.safe_float(row['Low'])
-                if prev_high - prev_low > 0:
-                    eff = abs(self.safe_float(row['Close']) - prev_open) / (prev_high - prev_low)
-                    prev_efficiencies.append(eff)
-            
-            avg_prev_efficiency = np.mean(prev_efficiencies) if prev_efficiencies else current_efficiency
-            efficiency_ratio = round(current_efficiency / max(0.01, avg_prev_efficiency), 2)
-            
-            # Range Expansion
-            current_range_pct = (curr_high - curr_low) / curr_open * 100 if curr_open > 0 else 0
-            avg_prev_range = np.mean(prev_ranges_pct) if prev_ranges_pct else current_range_pct
-            range_expansion = round(((current_range_pct - avg_prev_range) / max(0.1, avg_prev_range)) * 100, 2)
-            
-            # Momentum
-            if len(prev_closes) >= 3:
-                short_momentum = (prev_closes[-1] - prev_closes[-3]) / prev_closes[-3] * 100
-                medium_momentum = (prev_closes[-1] - prev_closes[0]) / prev_closes[0] * 100
-                momentum_alignment = abs(short_momentum - medium_momentum)
-                
-                if momentum_alignment < 0.05: momentum_pressure = "STRONG"
-                elif momentum_alignment < 0.1: momentum_pressure = "MODERATE"
-                else: momentum_pressure = "WEAK"
+        if vol_ratio > GAMMA_VOL_SPIKE_THRESHOLD and abs(speed) > 0.005:
+            if speed > 0:
+                return "CE"
             else:
-                momentum_pressure = "NEUTRAL"
-            
-            return {
-                'volume_surge_ratio': volume_surge_ratio,
-                'efficiency_ratio': efficiency_ratio,
-                'range_expansion': range_expansion,
-                'momentum_pressure': momentum_pressure,
-                'current_volume': curr_volume,
-                'avg_prev_volume': avg_prev_volume
-            }
-            
-        except Exception as e:
-            print(f"Metrics calculation error: {e}")
-            return {'volume_surge_ratio': 0.0, 'efficiency_ratio': 0.0, 'range_expansion': 0.0, 'momentum_pressure': "NEUTRAL"}
+                return "PE"
+    except Exception:
+        return None
+    return None
 
-    def is_institutional_signal(self, metrics, thresholds):
-        try:
-            return (metrics['volume_surge_ratio'] >= thresholds['volume_surge'] and
-                    metrics['efficiency_ratio'] >= thresholds['efficiency_ratio'] and
-                    metrics['range_expansion'] >= thresholds['range_expansion'] and
-                    metrics['momentum_pressure'] == "STRONG")
-        except: return False
+# 🚨 LIQUIDITY SWEEPS 🚨
+def detect_liquidity_sweeps(df):
+    try:
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        close = ensure_series(df['Close'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 10:
+            return None
+            
+        recent_highs = high.iloc[-10:-2]
+        recent_lows = low.iloc[-10:-2]
+        
+        liquidity_high = recent_highs.max()
+        liquidity_low = recent_lows.min()
+        
+        current_high = high.iloc[-1]
+        current_low = low.iloc[-1]
+        current_close = close.iloc[-1]
+        
+        if (current_high > liquidity_high * (1 + LIQUIDITY_SWEEP_DISTANCE) and
+            current_close < liquidity_high * 0.998 and
+            volume.iloc[-1] > volume.iloc[-10:-1].mean() * 1.8):
+            return "PE"
+            
+        if (current_low < liquidity_low * (1 - LIQUIDITY_SWEEP_DISTANCE) and
+            current_close > liquidity_low * 1.002 and
+            volume.iloc[-1] > volume.iloc[-10:-1].mean() * 1.8):
+            return "CE"
+    except Exception:
+        return None
+    return None
 
-# --------- SIGNAL MANAGEMENT ---------
-def can_send_signal(index, timeframe):
-    global active_signals
-    current_time = time.time()
-    signal_key = f"{index}_{timeframe}"
+# 🚨 VOLUME GAP IMBALANCE 🚨
+def detect_volume_gap_imbalance(df):
+    try:
+        volume = ensure_series(df['Volume'])
+        close = ensure_series(df['Close'])
+        
+        if len(volume) < 15:
+            return None
+            
+        current_volume = volume.iloc[-1]
+        avg_volume = volume.iloc[-15:].mean()
+        price_change = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]
+        
+        if (current_volume > avg_volume * VOLUME_GAP_IMBALANCE and
+            abs(price_change) > 0.006):  # Stronger price move required
+            if price_change > 0:
+                return "CE"
+            else:
+                return "PE"
+    except Exception:
+        return None
+    return None
+
+# 🚨 OTE (Optimal Trade Entry) 🚨
+def detect_ote_retracement(df):
+    try:
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        close = ensure_series(df['Close'])
+        
+        if len(close) < 15:
+            return None
+            
+        swing_high = high.iloc[-15:-5].max()
+        swing_low = low.iloc[-15:-5].min()
+        swing_range = swing_high - swing_low
+        
+        current_price = close.iloc[-1]
+        
+        for level in OTE_RETRACEMENT_LEVELS:
+            ote_level = swing_high - (swing_range * level)
+            
+            if (abs(current_price - ote_level) / ote_level < 0.002 and
+                close.iloc[-1] > close.iloc[-2] and
+                close.iloc[-1] > close.iloc[-3]):
+                return "CE"
+                
+            ote_level = swing_low + (swing_range * level)
+            if (abs(current_price - ote_level) / ote_level < 0.002 and
+                close.iloc[-1] < close.iloc[-2] and
+                close.iloc[-1] < close.iloc[-3]):
+                return "PE"
+    except Exception:
+        return None
+    return None
+
+# 🚨 DEMAND AND SUPPLY ZONES 🚨
+def detect_demand_supply_zones(df):
+    try:
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        close = ensure_series(df['Close'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < DEMAND_SUPPLY_ZONE_LOOKBACK + 5:
+            return None
+            
+        lookback = DEMAND_SUPPLY_ZONE_LOOKBACK
+        
+        # Find significant demand zones (support)
+        demand_zones = []
+        for i in range(3, len(low)-2):
+            if low.iloc[i] < low.iloc[i-1] and low.iloc[i] < low.iloc[i-2] and low.iloc[i] < low.iloc[i+1] and low.iloc[i] < low.iloc[i+2]:
+                demand_zones.append(low.iloc[i])
+        
+        # Find significant supply zones (resistance)  
+        supply_zones = []
+        for i in range(3, len(high)-2):
+            if high.iloc[i] > high.iloc[i-1] and high.iloc[i] > high.iloc[i-2] and high.iloc[i] > high.iloc[i+1] and high.iloc[i] > high.iloc[i+2]:
+                supply_zones.append(high.iloc[i])
+        
+        current_price = close.iloc[-1]
+        
+        # Check recent demand zones
+        for zone in demand_zones[-3:]:
+            if (abs(current_price - zone) / zone < 0.003 and
+                close.iloc[-1] > close.iloc[-2] and
+                close.iloc[-1] > close.iloc[-3] and
+                volume.iloc[-1] > volume.iloc[-5:].mean() * 1.5):
+                return "CE"
+                
+        # Check recent supply zones
+        for zone in supply_zones[-3:]:
+            if (abs(current_price - zone) / zone < 0.003 and
+                close.iloc[-1] < close.iloc[-2] and
+                close.iloc[-1] < close.iloc[-3] and
+                volume.iloc[-1] > volume.iloc[-5:].mean() * 1.5):
+                return "PE"
+    except Exception:
+        return None
+    return None
+
+# 🚨 PULLBACK REVERSAL 🚨
+def detect_pullback_reversal(df):
+    try:
+        close = ensure_series(df['Close'])
+        ema9 = ta.trend.EMAIndicator(close, 9).ema_indicator()
+        ema21 = ta.trend.EMAIndicator(close, 21).ema_indicator()
+        rsi = ta.momentum.RSIIndicator(close, 14).rsi()
+
+        if len(close) < 6:
+            return None
+
+        # Bullish pullback: Price was above EMA21, pulled back to EMA21, now bouncing
+        if (close.iloc[-6] > ema21.iloc[-6] and close.iloc[-3] <= ema21.iloc[-3] and 
+            close.iloc[-1] > ema9.iloc[-1] and rsi.iloc[-1] > 55 and 
+            close.iloc[-1] > close.iloc[-2] and close.iloc[-2] > close.iloc[-3]):
+            return "CE"
+
+        # Bearish pullback: Price was below EMA21, pulled back to EMA21, now rejecting
+        if (close.iloc[-6] < ema21.iloc[-6] and close.iloc[-3] >= ema21.iloc[-3] and 
+            close.iloc[-1] < ema9.iloc[-1] and rsi.iloc[-1] < 45 and 
+            close.iloc[-1] < close.iloc[-2] and close.iloc[-2] < close.iloc[-3]):
+            return "PE"
+    except Exception:
+        return None
+    return None
+
+# 🚨 SIGNAL QUEUE MANAGEMENT 🚨
+def can_send_new_signal():
+    global signal_queue_active, current_signal_data, last_activity_time
     
-    if signal_key in active_signals:
-        signal_data = active_signals[signal_key]
-        cooldown_period = signal_cooldown[timeframe]
-        if current_time - signal_data['timestamp'] < cooldown_period: return False
+    # No signal active
+    if not signal_queue_active:
+        return True
+        
+    # Check if 5 minutes passed without activity
+    if time.time() - last_activity_time > SIGNAL_TIMEOUT:
+        signal_queue_active = False
+        current_signal_data = None
+        send_telegram("⏰ 5-minute timeout - Releasing signal queue")
+        return True
+        
+    return False
+
+def update_signal_activity():
+    global last_activity_time
+    last_activity_time = time.time()
+
+def set_signal_active(signal_data):
+    global signal_queue_active, current_signal_data, last_activity_time
+    signal_queue_active = True
+    current_signal_data = signal_data
+    last_activity_time = time.time()
+
+def set_signal_complete():
+    global signal_queue_active, current_signal_data
+    signal_queue_active = False
+    current_signal_data = None
+
+# 🚨 STRIKE COOLDOWN SYSTEM 🚨
+def can_send_strike(index, strike, option_type):
+    key = f"{index}_{strike}_{option_type}"
+    if key in signaled_strikes:
+        if time.time() - signaled_strikes[key] < 3600:  # 1 hour cooldown
+            return False
+    signaled_strikes[key] = time.time()
     return True
 
-def update_signal_tracking(index, timeframe, signal_id):
-    global active_signals
-    signal_key = f"{index}_{timeframe}"
-    active_signals[signal_key] = {'signal_id': signal_id, 'timestamp': time.time(), 'timeframe': timeframe}
-
-def clear_completed_signal(signal_id):
-    global active_signals
-    active_signals = {k: v for k, v in active_signals.items() if v['signal_id'] != signal_id}
-
-# --------- PROFESSIONAL TELEGRAM FORMATTING ---------
-def send_institutional_signal(index, signal_data, df):
-    global signal_counter
-    
-    direction = signal_data['direction']
-    timeframe = signal_data['timeframe']
-    metrics = signal_data['metrics']
-    index_price = signal_data['index_price']
-    
-    # Calculate strike and symbol
-    strike = round_strike(index, index_price)
-    if strike is None: return
-    
-    symbol = get_option_symbol(index, EXPIRIES[index], strike, direction)
-    if symbol is None: return
-    
-    # Fetch option price
-    option_price = fetch_option_price(symbol)
-    if not option_price: return
-    
-    entry = round(option_price)
-    
-    # Calculate targets
-    points_moved = signal_data['points_moved']
-    base_move = max(points_moved * 0.8, 40)
+# 🚨 INSTITUTIONAL TARGETS 🚨
+def get_institutional_targets(entry_price, direction):
     if direction == "CE":
-        targets = [entry + int(base_move * 1.0), entry + int(base_move * 1.8), 
-                   entry + int(base_move * 2.8), entry + int(base_move * 4.0)]
-        sl = entry - int(base_move * 0.8)
+        target1 = round(entry_price * 1.015)
+        target2 = round(entry_price * 1.030)  
+        target3 = round(entry_price * 1.050)
+        target4 = round(entry_price * 1.080)
     else:
-        targets = [entry + int(base_move * 1.0), entry + int(base_move * 1.8),
-                   entry + int(base_move * 2.8), entry + int(base_move * 4.0)]
-        sl = entry - int(base_move * 0.8)
+        target1 = round(entry_price * 0.985)
+        target2 = round(entry_price * 0.970)
+        target3 = round(entry_price * 0.950)
+        target4 = round(entry_price * 0.920)
     
-    entry = int(entry)
-    targets = [int(t) for t in targets]
-    sl = int(sl)
-    targets_str = "//".join(str(t) for t in targets) + "++"
-    
-    signal_id = f"SIG{signal_counter:04d}"
-    signal_counter += 1
-    
-    update_signal_tracking(index, timeframe, signal_id)
-    
-    # 🏛️ PROFESSIONAL INSTITUTIONAL ANALYSIS MESSAGE
-    current_date = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%d %b %Y')
-    
-    institutional_msg = (
-        f"🏛️{'🔴' if signal_data['tg_direction'] == 'RED' else '🟢'} **INSTITUTIONAL PRESSURE DETECTED - {index} {timeframe}** {'🏛️🔴' if signal_data['tg_direction'] == 'RED' else '🏛️🟢'}\n\n"
-        
-        f"📅 **DATE**: {current_date}\n"
-        f"⏰ **TIME**: {signal_data['timestamp']} IST\n"
-        f"🎯 **DIRECTION**: {signal_data['tg_direction']}\n"
-        f"📈 **POINTS MOVED**: {signal_data['points_moved']} points\n"
-        f"📊 **CANDLE RANGE**: {signal_data['candle_range']} points\n"
-        f"📦 **VOLUME**: {signal_data['volume']}\n\n"
-        
-        f"📋 **PREVIOUS 3 CANDLES ANALYSIS**:\n"
-    )
-    
-    # Add previous candles analysis
-    for i, candle in enumerate(signal_data['previous_candles'], 1):
-        institutional_msg += (
-            f"    {i}. {candle['timestamp']} - {candle['direction']} {candle['points_moved']} points\n"
-            f"       O: {candle['open']} | H: {candle['high']} | L: {candle['low']} | C: {candle['close']}\n"
-            f"       Range: {candle['range']} pts | Volume: {candle['volume']}\n"
-        )
-    
-    # Institutional metrics
-    volume_assessment = "HIGH" if metrics['volume_surge_ratio'] >= 1.5 else "LOW"
-    efficiency_assessment = "STRONG" if metrics['efficiency_ratio'] >= 1.3 else "MIXED"
-    range_assessment = "INSTITUTIONAL_VOLUME" if metrics['range_expansion'] >= 15 else "RETAIL_VOLATILITY"
-    
-    directional_pressure = "INSTITUTIONAL_SELLING" if signal_data['tg_direction'] == 'RED' else "INSTITUTIONAL_BUYING"
-    pressure_strength = "HIGH" if signal_data['institutional_score'] >= 70 else "MEDIUM" if signal_data['institutional_score'] >= 50 else "LOW"
-    
-    institutional_msg += (
-        f"\n🏛️ **TRUE INSTITUTIONAL METRICS**:\n"
-        f"• Volume Surge: {metrics['volume_surge_ratio']}x ({volume_assessment})\n"
-        f"• Price Efficiency: {metrics['efficiency_ratio']}x ({efficiency_assessment})\n"
-        f"• Momentum Alignment: {metrics['momentum_pressure']}\n"
-        f"• Range Expansion: {metrics['range_expansion']}% ({range_assessment})\n\n"
-        
-        f"💼 **INSTITUTIONAL ASSESSMENT**:\n"
-        f"• Institutional Score: {signal_data['institutional_score']}/100\n"
-        f"• Pressure Type: {signal_data['pressure_type']}\n"
-        f"• Confidence: {signal_data['confidence']}\n"
-        f"• Directional Pressure: {directional_pressure}\n"
-        f"• Pressure Strength: {pressure_strength}\n\n"
-        
-        f"🎯 **TRADING IMPLICATION**:\n"
-        f"{directional_pressure} | {signal_data['confidence']} confidence\n"
-        f"True Activity: {signal_data['pressure_type']}\n"
-        f"📊 Market Status: INSTITUTIONAL_FLOW_DETECTED\n"
-    )
-    
-    # Send institutional analysis first
-    analysis_msg_id = send_telegram(institutional_msg)
-    
-    # Then send trading signal
-    trade_msg = (
-        f"\n{'🟢' if direction == 'CE' else '🔴'} {index} {strike} {direction}\n"
-        f"SYMBOL: {symbol}\n"
-        f"ABOVE {entry}\n"
-        f"TARGETS: {targets_str}\n"
-        f"SL: {sl}\n"
-        f"FAKEOUT: NO\n"
-        f"STRATEGY: INSTITUTIONAL PRESSURE {timeframe}\n"
-        f"SIGNAL ID: {signal_id}\n"
-        f"─────────────────────────────"
-    )
-    
-    thread_id = send_telegram(trade_msg, reply_to=analysis_msg_id)
-    
-    # Store signal record
-    signal_record = {
-        "signal_id": signal_id, "timestamp": signal_data['timestamp'], "index": index,
-        "strike": strike, "option_type": direction, "entry_price": entry,
-        "targets": targets, "sl": sl, "timeframe": timeframe, "metrics": metrics
-    }
-    
-    all_generated_signals.append(signal_record)
-    
-    # Start monitoring
-    monitor_signal(symbol, entry, targets, sl, timeframe, thread_id, signal_id, signal_record)
+    return [target1, target2, target3, target4]
 
-# --------- MONITORING ---------
-def monitor_signal(symbol, entry, targets, sl, timeframe, thread_id, signal_id, signal_record):
+# --------- UPDATED STRATEGY CHECK WITH PRIORITY ---------
+def analyze_index_signal(index):
+    df5 = fetch_index_data(index, "5m", "2d")
+    if df5 is None:
+        return None
+
+    close5 = ensure_series(df5["Close"])
+    if len(close5) < 20 or close5.isna().iloc[-1] or close5.isna().iloc[-2]:
+        return None
+
+    # Check signal queue
+    if not can_send_new_signal():
+        return None
+
+    # 🚨 PRIORITY 1: OPENING PLAY
+    try:
+        utc_now = datetime.utcnow()
+        ist_now = utc_now + timedelta(hours=5, minutes=30)
+        t = ist_now.time()
+        opening_range_bias = OPENING_PLAY_ENABLED and (OPENING_START <= t <= OPENING_END)
+        if opening_range_bias:
+            op_sig = institutional_opening_play(index, df5)
+            if op_sig and institutional_momentum_confirmation(index, df5, op_sig):
+                return op_sig, df5, False, "opening_play"
+    except Exception:
+        pass
+
+    # 🚨 PRIORITY 2: INSTITUTIONAL PRICE ACTION
+    institutional_pa_signal = institutional_price_action_signal(df5)
+    if institutional_pa_signal:
+        if institutional_momentum_confirmation(index, df5, institutional_pa_signal):
+            return institutional_pa_signal, df5, False, "institutional_price_action"
+
+    # 🚨 PRIORITY 3: GAMMA SQUEEZE
+    try:
+        gamma = detect_gamma_squeeze(index, df5)
+        if gamma and is_expiry_day_for_index(index) and EXPIRY_ACTIONABLE:
+            return gamma, df5, False, "gamma_squeeze"
+    except Exception:
+        pass
+
+    # 🚨 OTHER STRATEGIES
+    strategies = [
+        (detect_liquidity_sweeps, "liquidity_sweeps"),
+        (detect_volume_gap_imbalance, "volume_gap_imbalance"),
+        (detect_ote_retracement, "ote_retracement"),
+        (detect_demand_supply_zones, "demand_supply_zones"),
+        (detect_pullback_reversal, "pullback_reversal")
+    ]
+    
+    for strategy_func, strategy_key in strategies:
+        signal = strategy_func(df5)
+        if signal and institutional_momentum_confirmation(index, df5, signal):
+            return signal, df5, False, strategy_key
+
+    # 🚨 FINAL: LIQUIDITY ZONE
+    last_close = float(close5.iloc[-1])
+    bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
+    liquidity_side = liquidity_zone_entry_check(last_close, bull_liq, bear_liq)
+    if liquidity_side:
+        return liquidity_side, df5, False, "liquidity_zone"
+
+    return None
+
+# --------- SYMBOL FORMAT ---------
+def get_option_symbol(index, expiry_str, strike, opttype):
+    dt=datetime.strptime(expiry_str,"%d %b %Y")
+    
+    if index == "SENSEX":
+        year_short = dt.strftime("%y")
+        month_code = dt.strftime("%b").upper()
+        day = dt.strftime("%d")
+        return f"SENSEX{year_short}{month_code}{strike}{opttype}"
+    elif index == "MIDCPNIFTY":
+        return f"MIDCPNIFTY{dt.strftime('%d%b%y').upper()}{strike}{opttype}"
+    else:
+        return f"{index}{dt.strftime('%d%b%y').upper()}{strike}{opttype}"
+
+# --------- INSTITUTIONAL FLOW CHECKS ---------
+def institutional_flow_signal(index, df5):
+    try:
+        last_close = float(ensure_series(df5["Close"]).iloc[-1])
+        prev_close = float(ensure_series(df5["Close"]).iloc[-2])
+    except:
+        return None
+
+    vol5 = ensure_series(df5["Volume"])
+    vol_latest = float(vol5.iloc[-1])
+    vol_avg = float(vol5.rolling(15).mean().iloc[-1]) if len(vol5) >= 15 else float(vol5.mean())
+
+    if vol_latest > vol_avg*2.5 and abs(last_close-prev_close)/prev_close>0.008:
+        return "BOTH"
+    elif last_close>prev_close and vol_latest>vol_avg*2.0:
+        return "CE"
+    elif last_close<prev_close and vol_latest>vol_avg*2.0:
+        return "PE"
+    
+    return None
+
+def institutional_flow_confirm(index, base_signal, df5):
+    flow = institutional_flow_signal(index, df5)
+    
+    if flow and flow != 'BOTH' and flow != base_signal:
+        return False
+
+    try:
+        close = ensure_series(df5['Close'])
+        last_close = float(close.iloc[-1])
+        
+        high_zone, low_zone = detect_liquidity_zone(df5, lookback=20)
+        if base_signal == 'CE' and last_close >= high_zone:
+            return False
+        if base_signal == 'PE' and last_close <= low_zone:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+# 🚨 UPDATED MONITORING WITH SIGNAL QUEUE 🚨
+def monitor_price_live(symbol, entry, targets, sl, fakeout, thread_id, strategy_name, signal_data):
     def monitoring_thread():
         global daily_signals
-        monitoring_duration = signal_cooldown[timeframe]
-        start_time = time.time()
+        
+        last_high = entry
+        entry_price_achieved = False
         max_price_reached = entry
         targets_hit = [False] * len(targets)
+        first_target_hit = False
         
-        while time.time() - start_time < monitoring_duration:
-            if should_stop_trading(): break
+        while True:
+            if should_stop_trading():
+                break
                 
             price = fetch_option_price(symbol)
-            if price:
-                price = int(price)
-                if price > max_price_reached:
-                    max_price_reached = price
-                    if price > entry:
-                        send_telegram(f"📈 {symbol} moving up: {price}", reply_to=thread_id)
+            if not price: 
+                time.sleep(10)
+                continue
                 
-                for i, target in enumerate(targets):
-                    if price >= target and not targets_hit[i]:
-                        send_telegram(f"🎯 {symbol}: Target {i+1} hit at ₹{target}", reply_to=thread_id)
+            price = round(price)
+            
+            if price > max_price_reached:
+                max_price_reached = price
+                update_signal_activity()  # Update activity on new highs
+                
+            if not entry_price_achieved:
+                if price >= entry:
+                    send_telegram(f"✅ ENTRY TRIGGERED at {price}", reply_to=thread_id)
+                    entry_price_achieved = True
+                    last_high = price
+                    signal_data["entry_status"] = "ENTERED"
+                    update_signal_activity()
+            else:
+                if price > last_high:
+                    last_high = price
+                    update_signal_activity()
+                
+                # Check first target
+                if not first_target_hit and price >= targets[0]:
+                    send_telegram(f"🎯 {symbol}: 1st Target Hit at ₹{targets[0]}", reply_to=thread_id)
+                    targets_hit[0] = True
+                    first_target_hit = True
+                    update_signal_activity()
+                    
+                    # 🚨 CRITICAL: Release signal queue after 1st target
+                    time.sleep(2)
+                    set_signal_complete()
+                    send_telegram("🟢 Signal queue released - Next signal available")
+                
+                # Check other targets
+                for i in range(1, len(targets)):
+                    if price >= targets[i] and not targets_hit[i]:
+                        send_telegram(f"🎯 {symbol}: Target {i+1} hit at ₹{targets[i]}", reply_to=thread_id)
                         targets_hit[i] = True
-                        signal_record['targets_hit'] = sum(targets_hit)
+                        update_signal_activity()
                 
+                # Check SL hit
                 if price <= sl:
-                    send_telegram(f"🛑 {symbol}: SL hit at ₹{sl}", reply_to=thread_id)
+                    send_telegram(f"🔴 {symbol}: SL Hit at ₹{sl}", reply_to=thread_id)
+                    update_signal_activity()
+                    
+                    # 🚨 CRITICAL: Release signal queue after SL hit
+                    time.sleep(2)
+                    set_signal_complete()
+                    send_telegram("🟢 Signal queue released - Next signal available")
+                    break
+                    
+                if all(targets_hit):
+                    send_telegram(f"🏆 {symbol}: ALL TARGETS HIT!", reply_to=thread_id)
+                    update_signal_activity()
                     break
             
-            time.sleep(10)
+            time.sleep(8)
         
-        send_telegram(f"⏰ {symbol}: Monitoring period completed", reply_to=thread_id)
-        final_pnl = max_price_reached - entry
-        signal_record.update({
-            "max_price_reached": max_price_reached,
+        # Final P&L calculation
+        try:
+            if first_target_hit:
+                final_pnl = f"+{targets[0] - entry:.2f}"
+            elif price <= sl:
+                final_pnl = f"-{entry - sl:.2f}"
+            else:
+                final_pnl = "0"
+        except:
+            final_pnl = "0"
+            
+        signal_data.update({
             "targets_hit": sum(targets_hit),
-            "final_pnl": f"+{final_pnl}" if final_pnl > 0 else f"{final_pnl}"
+            "max_price_reached": max_price_reached,
+            "first_target_hit": first_target_hit,
+            "final_pnl": final_pnl
         })
-        
-        daily_signals.append(signal_record)
-        clear_completed_signal(signal_id)
+        daily_signals.append(signal_data)
     
     thread = threading.Thread(target=monitoring_thread)
     thread.daemon = True
     thread.start()
 
-# --------- SIGNAL GENERATION ---------
-def analyze_index_signal(index):
-    analyzer = InstitutionalPressureAnalyzer()
+# 🚨 UPDATED SIGNAL SENDING WITH QUEUE MANAGEMENT 🚨
+def send_signal(index, side, df, fakeout, strategy_key):
+    global signal_counter, all_generated_signals
     
-    # Check 1min data
-    df1 = fetch_index_data(index, "1m", "1d")
-    if df1 is not None and len(df1) >= 10:
-        signal_1m = analyzer.analyze_institutional_pressure(index, df1, "1m")
-        if signal_1m and can_send_signal(index, "1m"):
-            return signal_1m, df1
+    # Check signal queue
+    if not can_send_new_signal():
+        return
+        
+    current_df = fetch_index_data(index, "5m", "2d")
+    if current_df is None:
+        return
+        
+    signal_detection_price = float(ensure_series(current_df["Close"]).iloc[-1])
     
-    # Check 5min data
-    df5 = fetch_index_data(index, "5m", "2d")
-    if df5 is not None and len(df5) >= 10:
-        signal_5m = analyzer.analyze_institutional_pressure(index, df5, "5m")
-        if signal_5m and can_send_signal(index, "5m"):
-            return signal_5m, df5
+    # 🚨 ONE-STEP AWAY STRIKE
+    strike = round_strike(index, signal_detection_price)
+    if strike is None:
+        return
+        
+    # 🚨 STRIKE COOLDOWN CHECK
+    if not can_send_strike(index, strike, side):
+        return
+        
+    symbol = get_option_symbol(index, EXPIRIES[index], strike, side)
     
-    return None
+    option_price = fetch_option_price(symbol)
+    if not option_price: 
+        return
+    
+    entry = round(option_price)
+    
+    # 🚨 INSTITUTIONAL TARGETS
+    targets = get_institutional_targets(entry, side)
+    sl = round(option_price * 0.85) if side == "CE" else round(option_price * 1.15)
+    
+    strategy_name = STRATEGY_NAMES.get(strategy_key, strategy_key.upper())
+    
+    signal_id = f"SIG{signal_counter:04d}"
+    signal_counter += 1
+    
+    signal_data = {
+        "signal_id": signal_id,
+        "timestamp": (datetime.utcnow()+timedelta(hours=5,minutes=30)).strftime("%H:%M:%S"),
+        "index": index,
+        "strike": strike,
+        "option_type": side,
+        "strategy": strategy_name,
+        "entry_price": entry,
+        "targets": targets,
+        "sl": sl,
+        "fakeout": fakeout,
+        "index_price": signal_detection_price,
+        "entry_status": "PENDING"
+    }
+    
+    all_generated_signals.append(signal_data.copy())
+    
+    # 🚨 CLEAN ORGANIZED MESSAGE
+    msg = (f"🟢 GIT🔊 {index} {strike} {side}\n"
+           f"🏷️ {strategy_name}\n"
+           f"🔹 Strike: {strike}\n"
+           f"💰 Entry: ₹{entry}\n"
+           f"🎯 Targets: {targets[0]} // {targets[1]} // {targets[2]} // {targets[3]}\n"
+           f"🛑 SL: ₹{sl}\n"
+           f"📊 Index: {signal_detection_price:.2f}\n"
+           f"🆔 {signal_id}")
+         
+    thread_id = send_telegram(msg)
+    
+    if thread_id:
+        # 🚨 SET SIGNAL ACTIVE IN QUEUE
+        set_signal_active(signal_data)
+        
+        trade_id = f"{symbol}_{int(time.time())}"
+        active_trades[trade_id] = {
+            "symbol": symbol, 
+            "entry": entry, 
+            "sl": sl, 
+            "targets": targets, 
+            "thread": thread_id, 
+            "status": "OPEN",
+            "signal_data": signal_data
+        }
+        
+        monitor_price_live(symbol, entry, targets, sl, fakeout, thread_id, strategy_name, signal_data)
 
+# 🚨 UPDATED TRADE THREAD 🚨
 def trade_thread(index):
     result = analyze_index_signal(index)
-    if result:
-        signal_data, df = result
-        send_institutional_signal(index, signal_data, df)
+    
+    if not result:
+        return
+        
+    side, df, fakeout, strategy_key = result
+    
+    df5 = fetch_index_data(index, "5m", "2d")
+    if institutional_flow_confirm(index, side, df5):
+        send_signal(index, side, df, fakeout, strategy_key)
 
+# --------- MAIN LOOP (SELECTED INDICES) ---------
 def run_algo_parallel():
-    if not is_market_open() or should_stop_trading(): 
+    global stop_all_monitoring
+    
+    if not is_market_open(): 
+        return
+        
+    if should_stop_trading():
+        global STOP_SENT, EOD_REPORT_SENT
+        if not STOP_SENT:
+            send_telegram("🛑 Market closed - Stopping monitoring...")
+            STOP_SENT = True
+            
+        stop_all_monitoring = True
+        time.sleep(30)
+        
+        if not EOD_REPORT_SENT:
+            send_individual_signal_reports()
+            EOD_REPORT_SENT = True
+            
         return
         
     threads = []
-    for index in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+    selected_indices = ["NIFTY", "BANKNIFTY", "SENSEX", "MIDCPNIFTY"]
+    
+    for index in selected_indices:
         t = threading.Thread(target=trade_thread, args=(index,))
         t.start()
         threads.append(t)
     
-    for t in threads: t.join()
+    for t in threads: 
+        t.join(timeout=25)
 
-# --------- MAIN LOOP ---------
+# 🚨 EOD REPORT SYSTEM 🚨
+def send_individual_signal_reports():
+    global daily_signals, all_generated_signals
+    
+    all_signals = daily_signals + all_generated_signals
+    
+    seen_ids = set()
+    unique_signals = []
+    for signal in all_signals:
+        sid = signal.get('signal_id')
+        if not sid:
+            continue
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            unique_signals.append(signal)
+    
+    if not unique_signals:
+        send_telegram("📊 END OF DAY REPORT\nNo signals generated today.")
+        return
+    
+    send_telegram(f"📈 END OF DAY REPORT - { (datetime.utcnow()+timedelta(hours=5,minutes=30)).strftime('%d-%b-%Y') }\n"
+                  f"📊 Total Signals: {len(unique_signals)}\n"
+                  f"────────────────────")
+    
+    for i, signal in enumerate(unique_signals, 1):
+        msg = (f"📊 SIGNAL #{i}\n"
+               f"────────────────────\n"
+               f"🕒 {signal.get('timestamp','?')} | {signal.get('index','?')} {signal.get('strike','?')} {signal.get('option_type','?')}\n"
+               f"🏷️ {signal.get('strategy','?')}\n"
+               f"💰 Entry: ₹{signal.get('entry_price','?')}\n"
+               f"🎯 Targets Hit: {signal.get('targets_hit',0)}/4\n"
+               f"📈 Max Price: ₹{signal.get('max_price_reached',signal.get('entry_price','?'))}\n"
+               f"💵 P&L: {signal.get('final_pnl','0')}\n"
+               f"🆔 {signal.get('signal_id','?')}\n"
+               f"────────────────────")
+        
+        send_telegram(msg)
+        time.sleep(1)
+    
+    total_pnl = 0.0
+    successful_trades = 0
+    for signal in unique_signals:
+        pnl_str = signal.get("final_pnl", "0")
+        try:
+            if pnl_str.startswith("+"):
+                total_pnl += float(pnl_str[1:])
+                successful_trades += 1
+            elif pnl_str.startswith("-"):
+                total_pnl -= float(pnl_str[1:])
+        except:
+            pass
+    
+    summary_msg = (f"📈 DAY SUMMARY\n"
+                   f"────────────────────\n"
+                   f"• Signals: {len(unique_signals)}\n"
+                   f"• Successful: {successful_trades}\n"
+                   f"• Success Rate: {(successful_trades/len(unique_signals))*100:.1f}%\n"
+                   f"• Total P&L: ₹{total_pnl:+.2f}\n"
+                   f"────────────────────")
+    
+    send_telegram(summary_msg)
+
+# 🚨 MAIN LOOP WITH SIGNAL QUEUE 🚨
+MARKET_CLOSED_SENT = False
+EOD_REPORT_SENT = False
+STARTED_SENT = False
+STOP_SENT = False
+
 while True:
     try:
         utc_now = datetime.utcnow()
         ist_now = utc_now + timedelta(hours=5, minutes=30)
         current_time_ist = ist_now.time()
+        current_datetime_ist = ist_now
+
+        market_open = is_market_open()
         
-        if not is_market_open():
+        if not market_open:
+            if not MARKET_CLOSED_SENT:
+                send_telegram("🔴 Market Closed - Waiting for 9:15 AM...")
+                MARKET_CLOSED_SENT = True
+                STARTED_SENT = False
+                STOP_SENT = False
+                EOD_REPORT_SENT = False
+            
+            if current_time_ist >= dtime(15,30) and current_time_ist <= dtime(16,0) and not EOD_REPORT_SENT:
+                send_individual_signal_reports()
+                EOD_REPORT_SENT = True
+            
             time.sleep(30)
             continue
         
         if not STARTED_SENT:
-            send_telegram("🚀 **INSTITUTIONAL PRESSURE ALGO STARTED**\n"
-                         "🏛️ Professional Institutional Analysis\n"
-                         "📊 Multi-timeframe Pressure Detection\n"
-                         "🎯 Smart Option Strike Selection")
+            send_telegram("🚀 GIT ULTIMATE ALGO STARTED\n"
+                         "✅ 4 Indices | 8 Strategies\n"
+                         "✅ Signal Queue Management\n"
+                         "✅ Institutional Entries")
             STARTED_SENT = True
+            STOP_SENT = False
+            MARKET_CLOSED_SENT = False
         
         if should_stop_trading():
+            if not STOP_SENT:
+                send_telegram("🛑 Market closing - Preparing EOD Report...")
+                STOP_SENT = True
+                STARTED_SENT = False
+            
+            if not EOD_REPORT_SENT:
+                send_individual_signal_reports()
+                EOD_REPORT_SENT = True
+            
             time.sleep(60)
             continue
             
         run_algo_parallel()
-        time.sleep(30)
+        time.sleep(20)
         
     except Exception as e:
-        error_msg = f"⚠️ Algo error: {str(e)[:100]}"
-        send_telegram(error_msg)
-        time.sleep(60)
+        time.sleep(30)

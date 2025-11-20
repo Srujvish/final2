@@ -25,6 +25,12 @@ GAMMA_VOL_SPIKE_THRESHOLD = 2.0
 DELTA_OI_RATIO = 2.0
 MOMENTUM_VOL_AMPLIFIER = 1.5
 
+# 🚨 NEW: INSTITUTIONAL MOMENTUM IGNITION CONFIG
+INSTITUTIONAL_MOMENTUM_THRESHOLD = 0.012  # 1.2% move in single candle
+MIN_CANDLE_BODY_RATIO = 0.85  # 85% of range should be body (small wicks)
+VOLUME_SURGE_MULTIPLIER = 3.0  # Volume must be 3x average
+FOLLOW_THROUGH_CONFIRMATION = True  # Wait for next candle confirmation
+
 # STRONGER CONFIRMATION THRESHOLDS
 VCP_CONTRACTION_RATIO = 0.6
 FAULTY_BASE_BREAK_THRESHOLD = 0.25
@@ -54,7 +60,8 @@ STRATEGY_NAMES = {
     "ote_retracement": "OTE RETRACEMENT", 
     "demand_supply_zones": "DEMAND SUPPLY ZONES",
     "pullback_reversal": "PULLBACK REVERSAL",
-    "liquidity_zone": "LIQUIDITY ZONE"
+    "liquidity_zone": "LIQUIDITY ZONE",
+    "institutional_momentum_ignition": "INSTITUTIONAL MOMENTUM IGNITION"  # 🚨 NEW STRATEGY
 }
 
 # --------- SIGNAL MANAGEMENT ---------
@@ -588,6 +595,81 @@ def detect_pullback_reversal(df):
         return None
     return None
 
+# 🚨 NEW: INSTITUTIONAL MOMENTUM IGNITION STRATEGY 🚨
+def detect_institutional_momentum_ignition(df):
+    """
+    Detects explosive institutional moves in single candles
+    - Large price move (>1.2%) in single candle
+    - Small wicks (strong directional conviction)
+    - Volume surge (3x average)
+    - Follow-through confirmation
+    """
+    try:
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        close = ensure_series(df['Close'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 10:
+            return None
+            
+        # Current candle analysis
+        current_high = high.iloc[-1]
+        current_low = low.iloc[-1]
+        current_close = close.iloc[-1]
+        current_open = close.iloc[-2]  # Using previous close as approximate open
+        
+        # Calculate candle characteristics
+        candle_range = current_high - current_low
+        body_size = abs(current_close - current_open)
+        
+        # Skip if candle range is too small
+        if candle_range == 0:
+            return None
+            
+        body_ratio = body_size / candle_range
+        price_move_percent = abs(current_close - current_open) / current_open
+        
+        # Volume analysis
+        vol_avg_10 = volume.rolling(10).mean().iloc[-1]
+        current_volume = volume.iloc[-1]
+        volume_ratio = current_volume / vol_avg_10 if vol_avg_10 > 0 else 1
+        
+        # 🚨 INSTITUTIONAL MOMENTUM CRITERIA 🚨
+        momentum_bullish = (
+            price_move_percent >= INSTITUTIONAL_MOMENTUM_THRESHOLD and  # Big move
+            body_ratio >= MIN_CANDLE_BODY_RATIO and                    # Small wicks (strong conviction)
+            volume_ratio >= VOLUME_SURGE_MULTIPLIER and               # Volume surge
+            current_close > current_open and                          # Bullish candle
+            (current_close - current_open) > 0                        # Positive move
+        )
+        
+        momentum_bearish = (
+            price_move_percent >= INSTITUTIONAL_MOMENTUM_THRESHOLD and  # Big move
+            body_ratio >= MIN_CANDLE_BODY_RATIO and                    # Small wicks (strong conviction)
+            volume_ratio >= VOLUME_SURGE_MULTIPLIER and               # Volume surge
+            current_close < current_open and                          # Bearish candle
+            (current_open - current_close) > 0                        # Negative move
+        )
+        
+        # Follow-through confirmation (wait for next candle)
+        if FOLLOW_THROUGH_CONFIRMATION and len(close) >= 3:
+            if momentum_bullish and close.iloc[-1] > close.iloc[-2]:
+                return "CE"
+            elif momentum_bearish and close.iloc[-1] < close.iloc[-2]:
+                return "PE"
+        else:
+            # Immediate signal (more aggressive)
+            if momentum_bullish:
+                return "CE"
+            elif momentum_bearish:
+                return "PE"
+                
+    except Exception as e:
+        print(f"Momentum ignition error: {e}")
+        return None
+    return None
+
 # 🚨 SIGNAL QUEUE MANAGEMENT 🚨
 def can_send_new_signal():
     global signal_queue_active, current_signal_data, last_activity_time
@@ -671,13 +753,19 @@ def analyze_index_signal(index):
     except Exception:
         pass
 
-    # 🚨 PRIORITY 2: INSTITUTIONAL PRICE ACTION
+    # 🚨 PRIORITY 2: INSTITUTIONAL MOMENTUM IGNITION (NEW STRATEGY)
+    momentum_signal = detect_institutional_momentum_ignition(df5)
+    if momentum_signal:
+        if institutional_momentum_confirmation(index, df5, momentum_signal):
+            return momentum_signal, df5, False, "institutional_momentum_ignition"
+
+    # 🚨 PRIORITY 3: INSTITUTIONAL PRICE ACTION
     institutional_pa_signal = institutional_price_action_signal(df5)
     if institutional_pa_signal:
         if institutional_momentum_confirmation(index, df5, institutional_pa_signal):
             return institutional_pa_signal, df5, False, "institutional_price_action"
 
-    # 🚨 PRIORITY 3: GAMMA SQUEEZE
+    # 🚨 PRIORITY 4: GAMMA SQUEEZE
     try:
         gamma = detect_gamma_squeeze(index, df5)
         if gamma and is_expiry_day_for_index(index) and EXPIRY_ACTIONABLE:
@@ -1087,9 +1175,10 @@ while True:
         
         if not STARTED_SENT:
             send_telegram("🚀 GIT ULTIMATE ALGO STARTED\n"
-                         "✅ 4 Indices | 8 Strategies\n"
+                         "✅ 4 Indices | 9 Strategies\n"
                          "✅ Signal Queue Management\n"
-                         "✅ Institutional Entries")
+                         "✅ Institutional Entries\n"
+                         "✅ NEW: Momentum Ignition Strategy")
             STARTED_SENT = True
             STOP_SENT = False
             MARKET_CLOSED_SENT = False

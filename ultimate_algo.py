@@ -1,4 +1,4 @@
-#INDEXBASED + EOD NOT COMMING - FIXED VERSION
+#INDEXBASED + EOD NOT COMMING - INSTITUTIONAL VERSION
 
 import os
 import time
@@ -17,7 +17,7 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 # ---------------- CONFIG ----------------
-OPENING_PLAY_ENABLED = True
+OPENING_PLAY_ENABLED = False  # Disabled - too many fakeouts
 OPENING_START = dtime(9,15)
 OPENING_END = dtime(9,45)
 
@@ -28,20 +28,20 @@ GAMMA_VOL_SPIKE_THRESHOLD = 2.0
 DELTA_OI_RATIO = 2.0
 MOMENTUM_VOL_AMPLIFIER = 1.5
 
-# 🚨 **ENHANCED INSTITUTIONAL BLAST DETECTION** 🚨
-BLAST_VOLUME_THRESHOLD = 3.0  # 3x volume spike for institutional moves
-BLAST_PRICE_MOVE_PCT = 0.01   # 1% minimum move in single candle
-SWEEP_DISTANCE_PCT = 0.008    # 0.8% sweep through levels
-INSTITUTIONAL_SPREAD_RATIO = 1.8  # Body to wick ratio
+# 🚨 **INSTITUTIONAL GRADE THRESHOLDS** 🚨
+BLAST_VOLUME_THRESHOLD = 5.0  # 5x volume spike for REAL institutional moves
+BLAST_PRICE_MOVE_PCT = 0.015   # 1.5% minimum move in single candle
+SWEEP_DISTANCE_PCT = 0.01      # 1.0% sweep through levels
+INSTITUTIONAL_SPREAD_RATIO = 2.0  # Body to wick ratio
 
-# STRONGER CONFIRMATION THRESHOLDS
+# INSTITUTIONAL CONFIRMATION THRESHOLDS
 VCP_CONTRACTION_RATIO = 0.6
 FAULTY_BASE_BREAK_THRESHOLD = 0.25
-WYCKOFF_VOLUME_SPRING = 2.2
-LIQUIDITY_SWEEP_DISTANCE = 0.005
-PEAK_REJECTION_WICK_RATIO = 0.8
-FVG_GAP_THRESHOLD = 0.0025
-VOLUME_GAP_IMBALANCE = 2.5
+WYCKOFF_VOLUME_SPRING = 2.5  # Increased for institutional moves
+LIQUIDITY_SWEEP_DISTANCE = 0.008  # Increased
+PEAK_REJECTION_WICK_RATIO = 0.85
+FVG_GAP_THRESHOLD = 0.003
+VOLUME_GAP_IMBALANCE = 3.0  # Increased
 OTE_RETRACEMENT_LEVELS = [0.618, 0.786]
 DEMAND_SUPPLY_ZONE_LOOKBACK = 20
 
@@ -53,21 +53,13 @@ EXPIRIES = {
     "MIDCPNIFTY": "30 DEC 2025"
 }
 
-# --------- KEEP ONLY YOUR 10 STRATEGIES + BLAST ---------
+# --------- INSTITUTIONAL STRATEGIES ONLY ---------
 STRATEGY_NAMES = {
-    "institutional_price_action": "INSTITUTIONAL PRICE ACTION",
-    "opening_play": "OPENING PLAY", 
-    "gamma_squeeze": "GAMMA SQUEEZE",
-    "liquidity_sweeps": "LIQUIDITY SWEEP",
-    "volume_gap_imbalance": "VOLUME GAP IMBALANCE",
-    "ote_retracement": "OTE RETRACEMENT",
-    "demand_supply_zones": "DEMAND SUPPLY ZONES",
-    "pullback_reversal": "PULLBACK REVERSAL",
-    "orderflow_mimic": "ORDERFLOW MIMIC",
-    "bottom_fishing": "BOTTOM FISHING",
+    "institutional_stop_hunt": "INSTITUTIONAL STOP HUNT",
+    "liquidity_absorption": "LIQUIDITY ABSORPTION",
+    "false_breakout_trap": "FALSE BREAKOUT TRAP", 
     "liquidity_zone": "LIQUIDITY ZONE",
     "institutional_blast": "INSTITUTIONAL BLAST",
-    "volume_spike_blast": "VOLUME SPIKE BLAST",
     "sweep_order_detection": "SWEEP ORDER DETECTION"
 }
 
@@ -80,24 +72,16 @@ daily_signals = []
 # --------- NEW: SIGNAL DEDUPLICATION AND COOLDOWN TRACKING ---------
 active_strikes = {}
 last_signal_time = {}
-signal_cooldown = 1200
+signal_cooldown = 1800  # Increased to 30 minutes for institutional moves
 
 def initialize_strategy_tracking():
     global strategy_performance
     strategy_performance = {
-        "INSTITUTIONAL PRICE ACTION": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "OPENING PLAY": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "GAMMA SQUEEZE": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "LIQUIDITY SWEEP": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "VOLUME GAP IMBALANCE": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "OTE RETRACEMENT": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "DEMAND SUPPLY ZONES": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "PULLBACK REVERSAL": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "ORDERFLOW MIMIC": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "BOTTOM FISHING": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
+        "INSTITUTIONAL STOP HUNT": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
+        "LIQUIDITY ABSORPTION": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
+        "FALSE BREAKOUT TRAP": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
         "LIQUIDITY ZONE": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
         "INSTITUTIONAL BLAST": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
-        "VOLUME SPIKE BLAST": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0},
         "SWEEP ORDER DETECTION": {"total": 0, "success_2_targets": 0, "success_3_4_targets": 0, "total_pnl": 0}
     }
 
@@ -365,10 +349,11 @@ def liquidity_zone_entry_check(price, bull_liq, bear_liq):
             return None
     return None
 
-# 🚨 **NEW: INSTITUTIONAL BLAST DETECTOR - ENHANCED** 🚨
-def detect_institutional_blast(df):
+# 🚨 **NEW: INSTITUTIONAL STOP HUNT DETECTION** 🚨
+def detect_stop_hunt(df):
     """
-    Detect BIG single candle institutional moves
+    Institutions HUNT STOPS before big moves.
+    Pattern: Quick spike through level + quick rejection + reversal
     """
     try:
         close = ensure_series(df['Close'])
@@ -377,7 +362,228 @@ def detect_institutional_blast(df):
         open_price = ensure_series(df['Open'])
         volume = ensure_series(df['Volume'])
         
+        if len(close) < 8:
+            return None
+        
+        # Find recent liquidity levels (last 30 mins)
+        recent_highs = high.iloc[-6:-1]
+        recent_lows = low.iloc[-6:-1]
+        
+        liquidity_high = recent_highs.max()
+        liquidity_low = recent_lows.min()
+        
+        current_high = high.iloc[-1]
+        current_low = low.iloc[-1]
+        current_close = close.iloc[-1]
+        prev_close = close.iloc[-2]
+        
+        # Volume analysis
+        vol_avg = volume.rolling(10).mean().iloc[-1] if len(volume) >= 10 else volume.mean()
+        current_vol = volume.iloc[-1]
+        
+        # 🚨 BEARISH STOP HUNT (then UP move - CE entry)
+        # Pattern: Price sweeps LOW (hunts bull stops), rejects, closes HIGH
+        if (current_low < liquidity_low * (1 - 0.006) and  # Sweeps below recent low
+            current_close > liquidity_low * 1.003 and       # Closes well above
+            current_close > prev_close and                   # Green candle
+            current_vol > vol_avg * 1.8 and                 # High volume
+            (current_high - current_close) < (current_close - current_low) * 0.5):  # Small upper wick
+            return "CE"  # Bull stops hunted, now UP move
+        
+        # 🚨 BULLISH STOP HUNT (then DOWN move - PE entry)
+        # Pattern: Price sweeps HIGH (hunts bear stops), rejects, closes LOW
+        if (current_high > liquidity_high * (1 + 0.006) and  # Sweeps above recent high
+            current_close < liquidity_high * 0.997 and       # Closes well below
+            current_close < prev_close and                   # Red candle
+            current_vol > vol_avg * 1.8 and                 # High volume
+            (current_close - current_low) < (current_high - current_close) * 0.5):  # Small lower wick
+            return "PE"  # Bear stops hunted, now DOWN move
+    
+    except Exception:
+        return None
+    return None
+
+# 🚨 **NEW: LIQUIDITY ABSORPTION DETECTION** 🚨
+def detect_liquidity_absorption(df):
+    """
+    Institutions ABSORB selling/buying before big moves.
+    Pattern: High volume + small range + closing near extremes
+    """
+    try:
+        close = ensure_series(df['Close'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        volume = ensure_series(df['Volume'])
+        
         if len(close) < 5:
+            return None
+        
+        current_high = high.iloc[-1]
+        current_low = low.iloc[-1]
+        current_close = close.iloc[-1]
+        current_open = ensure_series(df['Open']).iloc[-1]
+        current_volume = volume.iloc[-1]
+        
+        # Volume analysis
+        vol_avg_10 = volume.rolling(10).mean().iloc[-1] if len(volume) >= 10 else volume.mean()
+        
+        # Calculate candle properties
+        candle_range = current_high - current_low
+        body_size = abs(current_close - current_open)
+        upper_wick = current_high - max(current_close, current_open)
+        lower_wick = min(current_close, current_open) - current_low
+        
+        # 🚨 BULLISH ABSORPTION (CE entry)
+        # Pattern: High volume + small range + closing near HIGH (absorbing selling)
+        if (current_volume > vol_avg_10 * 2.5 and        # Very high volume
+            candle_range < candle_range.iloc[-2] * 0.7 and  # Smaller range than previous
+            current_close > current_open and                # Green candle
+            lower_wick > body_size * 1.2 and                # Long lower wick (absorption)
+            upper_wick < body_size * 0.3):                  # Small upper wick
+            return "CE"
+        
+        # 🚨 BEARISH ABSORPTION (PE entry)
+        # Pattern: High volume + small range + closing near LOW (absorbing buying)
+        if (current_volume > vol_avg_10 * 2.5 and        # Very high volume
+            candle_range < candle_range.iloc[-2] * 0.7 and  # Smaller range than previous
+            current_close < current_open and                # Red candle
+            upper_wick > body_size * 1.2 and                # Long upper wick (absorption)
+            lower_wick < body_size * 0.3):                  # Small lower wick
+            return "PE"
+    
+    except Exception:
+        return None
+    return None
+
+# 🚨 **NEW: FALSE BREAKOUT TRAP DETECTION** 🚨
+def detect_false_breakout_trap(df):
+    """
+    Institutions create FALSE BREAKOUTS to trap retail.
+    Pattern: Break key level + quick reversal + volume confirmation
+    """
+    try:
+        close = ensure_series(df['Close'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 10:
+            return None
+        
+        # Find key levels (last 30-60 minutes)
+        recent_highs = high.iloc[-12:-2]
+        recent_lows = low.iloc[-12:-2]
+        
+        resistance_level = recent_highs.max()
+        support_level = recent_lows.min()
+        
+        current_high = high.iloc[-1]
+        current_low = low.iloc[-1]
+        current_close = close.iloc[-1]
+        prev_close = close.iloc[-2]
+        
+        # Volume analysis
+        vol_avg = volume.rolling(15).mean().iloc[-1] if len(volume) >= 15 else volume.mean()
+        current_vol = volume.iloc[-1]
+        
+        # 🚨 FALSE BULL BREAKOUT (then DOWN - PE entry)
+        # Pattern: Break above resistance + close below + high volume
+        if (current_high > resistance_level * 1.003 and  # Breaks resistance
+            current_close < resistance_level * 0.997 and  # Closes below
+            current_close < prev_close and                 # Red candle
+            current_vol > vol_avg * 2.0 and               # High volume (trap volume)
+            (current_close - current_low) < (current_high - current_close) * 0.4):  # Small lower wick
+            return "PE"  # Bull trap - now DOWN
+        
+        # 🚨 FALSE BEAR BREAKOUT (then UP - CE entry)
+        # Pattern: Break below support + close above + high volume
+        if (current_low < support_level * 0.997 and      # Breaks support
+            current_close > support_level * 1.003 and     # Closes above
+            current_close > prev_close and                # Green candle
+            current_vol > vol_avg * 2.0 and               # High volume (trap volume)
+            (current_high - current_close) < (current_close - current_low) * 0.4):  # Small upper wick
+            return "CE"  # Bear trap - now UP
+    
+    except Exception:
+        return None
+    return None
+
+# 🚨 **IMPROVED LIQUIDITY ZONE STRATEGY** 🚨
+def improved_liquidity_zone_strategy(index, df):
+    """
+    ENHANCED version of your perfect entry strategy
+    Combines liquidity zone with institutional confirmation
+    """
+    try:
+        close = ensure_series(df['Close'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 15:
+            return None
+        
+        # Get liquidity zones
+        bull_liq, bear_liq = institutional_liquidity_hunt(index, df)
+        current_price = float(close.iloc[-1])
+        
+        # Volume confirmation
+        vol_avg = volume.rolling(20).mean().iloc[-1] if len(volume) >= 20 else volume.mean()
+        current_vol = volume.iloc[-1]
+        
+        # Check BEAR liquidity zone (CE entry)
+        for zone in bear_liq:
+            if zone is None:
+                continue
+            try:
+                # Price near bear liquidity zone
+                if abs(current_price - zone) <= 8:
+                    # INSTITUTIONAL CONFIRMATION:
+                    # 1. Volume spike
+                    # 2. Momentum confirmation
+                    # 3. Not a false breakout
+                    if (current_vol > vol_avg * 1.8 and
+                        close.iloc[-1] > close.iloc[-2] and
+                        close.iloc[-2] > close.iloc[-3] and
+                        high.iloc[-1] > high.iloc[-2]):  # Making higher highs
+                        return "CE"
+            except:
+                continue
+        
+        # Check BULL liquidity zone (PE entry)
+        for zone in bull_liq:
+            if zone is None:
+                continue
+            try:
+                # Price near bull liquidity zone
+                if abs(current_price - zone) <= 8:
+                    # INSTITUTIONAL CONFIRMATION:
+                    if (current_vol > vol_avg * 1.8 and
+                        close.iloc[-1] < close.iloc[-2] and
+                        close.iloc[-2] < close.iloc[-3] and
+                        low.iloc[-1] < low.iloc[-2]):  # Making lower lows
+                        return "PE"
+            except:
+                continue
+    
+    except Exception:
+        return None
+    return None
+
+# 🚨 **ENHANCED INSTITUTIONAL BLAST DETECTOR** 🚨
+def detect_institutional_blast(df):
+    """
+    Detect REAL institutional moves (not retail spikes)
+    Higher thresholds, better confirmation
+    """
+    try:
+        close = ensure_series(df['Close'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
+        open_price = ensure_series(df['Open'])
+        volume = ensure_series(df['Volume'])
+        
+        if len(close) < 8:
             return None
         
         # Current candle data
@@ -398,96 +604,39 @@ def detect_institutional_blast(df):
         current_body = abs(current_close - current_open)
         prev_body = abs(prev_close - prev_open)
         
-        # Calculate volume average
-        if len(volume) >= 10:
-            vol_avg_10 = volume.rolling(10).mean().iloc[-1]
+        # Calculate volume average (20 period)
+        if len(volume) >= 20:
+            vol_avg_20 = volume.rolling(20).mean().iloc[-1]
         else:
-            vol_avg_10 = volume.mean()
+            vol_avg_20 = volume.mean()
         
-        # CHECK 1: BIG GREEN BLAST CANDLE (CE)
-        # Conditions: Big body, high volume, closes near high
-        if (current_close > current_open and  # Green candle
-            current_body > prev_body * 2.0 and  # Body 2x previous
-            current_volume > vol_avg_10 * BLAST_VOLUME_THRESHOLD and  # High volume
-            (current_close - current_low) > current_body * 2.0 and  # Small lower wick
-            current_close > prev_high and  # Breaks previous high
-            (current_close - prev_close) / prev_close > BLAST_PRICE_MOVE_PCT):  # 1%+ move
+        # 🚨 **STRICT INSTITUTIONAL BLAST CRITERIA** 🚨
+        # CHECK 1: MASSIVE GREEN BLAST CANDLE (CE)
+        if (current_close > current_open and                    # Green candle
+            current_body > prev_body * 3.0 and                  # Body 3x previous (not 2x)
+            current_volume > vol_avg_20 * BLAST_VOLUME_THRESHOLD and  # 5x volume
+            (current_close - current_low) > current_body * 3.0 and    # Very small lower wick
+            current_close > prev_high + (prev_high * 0.005) and       # Breaks high with buffer
+            (current_close - prev_close) / prev_close > BLAST_PRICE_MOVE_PCT):  # 1.5%+ move
             return "CE"
         
-        # CHECK 2: BIG RED BLAST CANDLE (PE)
-        # Conditions: Big body, high volume, closes near low
-        elif (current_close < current_open and  # Red candle
-              current_body > prev_body * 2.0 and  # Body 2x previous
-              current_volume > vol_avg_10 * BLAST_VOLUME_THRESHOLD and  # High volume
-              (current_high - current_close) > current_body * 2.0 and  # Small upper wick
-              current_close < prev_low and  # Breaks previous low
-              (prev_close - current_close) / prev_close > BLAST_PRICE_MOVE_PCT):  # 1%+ move
+        # CHECK 2: MASSIVE RED BLAST CANDLE (PE)
+        elif (current_close < current_open and                  # Red candle
+              current_body > prev_body * 3.0 and                # Body 3x previous
+              current_volume > vol_avg_20 * BLAST_VOLUME_THRESHOLD and  # 5x volume
+              (current_high - current_close) > current_body * 3.0 and   # Very small upper wick
+              current_close < prev_low - (prev_low * 0.005) and         # Breaks low with buffer
+              (prev_close - current_close) / prev_close > BLAST_PRICE_MOVE_PCT):  # 1.5%+ move
             return "PE"
-        
-        # CHECK 3: SWEEP ORDER DETECTION
-        # Price sweeps through a level and reverses
-        recent_high = high.iloc[-5:-1].max()
-        recent_low = low.iloc[-5:-1].min()
-        
-        # Bearish sweep (PE): Price sweeps high then closes low
-        if (current_high > recent_high * (1 + SWEEP_DISTANCE_PCT) and
-            current_close < recent_high * 0.995 and  # Closes below sweep level
-            current_volume > vol_avg_10 * 2.0):
-            return "PE"
-        
-        # Bullish sweep (CE): Price sweeps low then closes high
-        elif (current_low < recent_low * (1 - SWEEP_DISTANCE_PCT) and
-              current_close > recent_low * 1.005 and  # Closes above sweep level
-              current_volume > vol_avg_10 * 2.0):
-            return "CE"
-            
-    except Exception as e:
-        return None
-    return None
-
-# 🚨 **NEW: VOLUME SPIKE BLAST DETECTION** 🚨
-def detect_volume_spike_blast(df):
-    """
-    Detect sudden volume spikes with price movement
-    """
-    try:
-        close = ensure_series(df['Close'])
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
-        volume = ensure_series(df['Volume'])
-        
-        if len(volume) < 20:
-            return None
-        
-        # Current values
-        current_close = close.iloc[-1]
-        current_volume = volume.iloc[-1]
-        
-        # Volume calculations
-        vol_avg_20 = volume.rolling(20).mean().iloc[-1]
-        
-        # CHECK: Volume spike (3x average)
-        if current_volume > vol_avg_20 * BLAST_VOLUME_THRESHOLD:
-            # Check price movement direction
-            prev_close = close.iloc[-2]
-            price_change_pct = (current_close - prev_close) / prev_close
-            
-            # Bullish volume spike
-            if price_change_pct > BLAST_PRICE_MOVE_PCT:
-                return "CE"
-            
-            # Bearish volume spike
-            elif price_change_pct < -BLAST_PRICE_MOVE_PCT:
-                return "PE"
     
     except Exception:
         return None
     return None
 
-# 🚨 **NEW: SWEEP ORDER DETECTION** 🚨
+# 🚨 **ENHANCED SWEEP ORDER DETECTION** 🚨
 def detect_sweep_orders(df):
     """
-    Detect institutional sweep orders through key levels
+    Detect institutional sweep orders (liquidity grabs)
     """
     try:
         close = ensure_series(df['Close'])
@@ -495,12 +644,12 @@ def detect_sweep_orders(df):
         low = ensure_series(df['Low'])
         volume = ensure_series(df['Volume'])
         
-        if len(close) < 10:
+        if len(close) < 15:
             return None
         
-        # Find recent liquidity levels
-        recent_highs = high.iloc[-10:-2]
-        recent_lows = low.iloc[-10:-2]
+        # Find recent liquidity levels (last hour)
+        recent_highs = high.iloc[-12:-2]
+        recent_lows = low.iloc[-12:-2]
         
         liquidity_high = recent_highs.max()
         liquidity_low = recent_lows.min()
@@ -510,374 +659,78 @@ def detect_sweep_orders(df):
         current_close = close.iloc[-1]
         
         # Volume average
-        vol_avg = volume.rolling(10).mean().iloc[-1]
+        vol_avg = volume.rolling(15).mean().iloc[-1] if len(volume) >= 15 else volume.mean()
+        current_vol = volume.iloc[-1]
         
-        # Bearish sweep detection (PE)
+        # 🚨 BEARISH SWEEP (PE) - Sweep highs then drop
         if (current_high > liquidity_high * (1 + SWEEP_DISTANCE_PCT) and
-            current_close < liquidity_high * 0.997 and  # Closes well below
-            volume.iloc[-1] > vol_avg * 2.5):
+            current_close < liquidity_high * 0.995 and  # Closes well below
+            current_vol > vol_avg * 3.0 and             # High volume
+            (current_high - current_close) > (current_close - current_low) * 2.0):  # Long upper wick
             return "PE"
         
-        # Bullish sweep detection (CE)
+        # 🚨 BULLISH SWEEP (CE) - Sweep lows then rally
         elif (current_low < liquidity_low * (1 - SWEEP_DISTANCE_PCT) and
-              current_close > liquidity_low * 1.003 and  # Closes well above
-              volume.iloc[-1] > vol_avg * 2.5):
+              current_close > liquidity_low * 1.005 and  # Closes well above
+              current_vol > vol_avg * 3.0 and             # High volume
+              (current_close - current_low) > (current_high - current_close) * 2.0):  # Long lower wick
             return "CE"
     
     except Exception:
         return None
     return None
 
-# 🚨 NEW: INSTITUTIONAL PRICE ACTION LAYER 🚨
-def institutional_price_action_signal(df):
+# 🚨 **INSTITUTIONAL MOMENTUM CONFIRMATION** 🚨
+def institutional_momentum_confirmation(index, df, proposed_signal):
+    """
+    STRICT confirmation for institutional moves
+    """
     try:
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
         close = ensure_series(df['Close'])
         volume = ensure_series(df['Volume'])
+        high = ensure_series(df['High'])
+        low = ensure_series(df['Low'])
         
-        if len(close) < 10:
-            return None
-            
-        recent_high = high.iloc[-10:-1].max()
-        recent_low = low.iloc[-10:-1].min()
-        current_close = close.iloc[-1]
+        if len(close) < 6:
+            return False
         
-        vol_avg = volume.rolling(20).mean().iloc[-1]
+        # Volume confirmation
+        vol_avg = volume.rolling(20).mean().iloc[-1] if len(volume) >= 20 else volume.mean()
         current_vol = volume.iloc[-1]
         
-        if (current_close > recent_high and 
-            current_vol > vol_avg * 1.8 and
-            current_close > close.iloc[-2] and
-            close.iloc[-2] > close.iloc[-3]):
-            return "CE"
-            
-        if (current_close < recent_low and
-            current_vol > vol_avg * 1.8 and
-            current_close < close.iloc[-2] and
-            close.iloc[-2] < close.iloc[-3]):
-            return "PE"
-            
-        current_body = abs(close.iloc[-1] - close.iloc[-2])
-        upper_wick = high.iloc[-1] - max(close.iloc[-1], close.iloc[-2])
-        lower_wick = min(close.iloc[-1], close.iloc[-2]) - low.iloc[-1]
-        
-        if (upper_wick > current_body * 1.5 and
-            current_vol > vol_avg * 1.5 and
-            close.iloc[-1] < close.iloc[-2]):
-            return "PE"
-            
-        if (lower_wick > current_body * 1.5 and
-            current_vol > vol_avg * 1.5 and
-            close.iloc[-1] > close.iloc[-2]):
-            return "CE"
-            
-    except Exception:
-        return None
-    return None
-
-# 🚨 NEW: INSTITUTIONAL MOMENTUM CONFIRMATION 🚨
-def institutional_momentum_confirmation(index, df, proposed_signal):
-    try:
-        close = ensure_series(df['Close'])
-        volume = ensure_series(df['Volume'])
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
-        
-        if len(close) < 5:
+        if current_vol < vol_avg * 1.5:  # Must have volume
             return False
-            
+        
         if proposed_signal == "CE":
-            if not (close.iloc[-1] > close.iloc[-2] and close.iloc[-2] > close.iloc[-3]):
+            # Must have: 3 consecutive higher closes AND expanding range
+            if not (close.iloc[-1] > close.iloc[-2] and 
+                    close.iloc[-2] > close.iloc[-3] and
+                    close.iloc[-3] > close.iloc[-4]):
                 return False
-            if (high.iloc[-1] - low.iloc[-1]) < (high.iloc[-2] - low.iloc[-2]) * 0.7:
+            
+            # Range expansion
+            current_range = high.iloc[-1] - low.iloc[-1]
+            prev_range = high.iloc[-2] - low.iloc[-2]
+            if current_range < prev_range * 0.8:  # Range should expand
                 return False
                 
         elif proposed_signal == "PE":
-            if not (close.iloc[-1] < close.iloc[-2] and close.iloc[-2] < close.iloc[-3]):
+            # Must have: 3 consecutive lower closes AND expanding range
+            if not (close.iloc[-1] < close.iloc[-2] and 
+                    close.iloc[-2] < close.iloc[-3] and
+                    close.iloc[-3] < close.iloc[-4]):
                 return False
-            if (high.iloc[-1] - low.iloc[-1]) < (high.iloc[-2] - low.iloc[-2]) * 0.7:
+            
+            # Range expansion
+            current_range = high.iloc[-1] - low.iloc[-1]
+            prev_range = high.iloc[-2] - low.iloc[-2]
+            if current_range < prev_range * 0.8:  # Range should expand
                 return False
-                
+        
         return True
         
     except Exception:
         return False
-
-# 🚨 LAYER 1: OPENING-RANGE INSTITUTIONAL PLAY 🚨
-def institutional_opening_play(index, df):
-    try:
-        prev_high = float(ensure_series(df['High']).iloc[-2])
-        prev_low = float(ensure_series(df['Low']).iloc[-2])
-        prev_close = float(ensure_series(df['Close']).iloc[-2])
-        current_price = float(ensure_series(df['Close']).iloc[-1])
-    except Exception:
-        return None
-        
-    volume = ensure_series(df['Volume'])
-    vol_avg = volume.rolling(10).mean().iloc[-1] if len(volume) >= 10 else volume.mean()
-    vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg > 0 else 1)
-    
-    if current_price > prev_high + 15 and vol_ratio > 1.3: return "CE"
-    if current_price < prev_low - 15 and vol_ratio > 1.3: return "PE"
-    if current_price > prev_close + 25 and vol_ratio > 1.2: return "CE"
-    if current_price < prev_close - 25 and vol_ratio > 1.2: return "PE"
-    return None
-
-# 🚨 LAYER 2: GAMMA SQUEEZE / EXPIRY LAYER 🚨
-def is_expiry_day_for_index(index):
-    try:
-        ex = EXPIRIES.get(index)
-        if not ex: return False
-        dt = datetime.strptime(ex, "%d %b %Y")
-        today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
-        return dt.date() == today
-    except Exception:
-        return False
-
-def detect_gamma_squeeze(index, df):
-    try:
-        close = ensure_series(df['Close']); volume = ensure_series(df['Volume']); 
-        high = ensure_series(df['High']); low = ensure_series(df['Low'])
-        if len(close) < 6: return None
-        
-        vol_avg = volume.rolling(20).mean().iloc[-1] if len(volume)>=20 else volume.mean()
-        vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg>0 else 1)
-        speed = (close.iloc[-1] - close.iloc[-3]) / (abs(close.iloc[-3]) + 1e-6)
-        
-        try:
-            url=f"https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-            df_s = pd.DataFrame(requests.get(url,timeout=10).json())
-            df_s['symbol'] = df_s['symbol'].str.upper()
-            df_index = df_s[df_s['symbol'].str.contains(index)]
-            df_index['oi'] = pd.to_numeric(df_index.get('oi',0), errors='coerce').fillna(0)
-            ce_oi = df_index[df_index['symbol'].str.endswith("CE")]['oi'].sum()
-            pe_oi = df_index[df_index['symbol'].str.endswith("PE")]['oi'].sum()
-        except Exception:
-            ce_oi = pe_oi = 0
-        
-        if vol_ratio > GAMMA_VOL_SPIKE_THRESHOLD and abs(speed) > 0.003:
-            if speed > 0:
-                conf = min(1.0, (vol_ratio - 1.0) / 3.0 + (ce_oi / (pe_oi+1e-6)) * 0.1)
-                return {'side':'CE','confidence':conf}
-            else:
-                conf = min(1.0, (vol_ratio - 1.0) / 3.0 + (pe_oi / (ce_oi+1e-6)) * 0.1)
-                return {'side':'PE','confidence':conf}
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 11: LIQUIDITY SWEEPS 🚨
-def detect_liquidity_sweeps(df):
-    try:
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
-        close = ensure_series(df['Close'])
-        volume = ensure_series(df['Volume'])
-        
-        if len(close) < 10:
-            return None
-            
-        recent_highs = high.iloc[-10:-2]
-        recent_lows = low.iloc[-10:-2]
-        
-        liquidity_high = recent_highs.max()
-        liquidity_low = recent_lows.min()
-        
-        current_high = high.iloc[-1]
-        current_low = low.iloc[-1]
-        current_close = close.iloc[-1]
-        
-        if (current_high > liquidity_high * (1 + LIQUIDITY_SWEEP_DISTANCE) and
-            current_close < liquidity_high * 0.998 and
-            volume.iloc[-1] > volume.iloc[-10:-1].mean() * 1.6):
-            return "PE"
-            
-        if (current_low < liquidity_low * (1 - LIQUIDITY_SWEEP_DISTANCE) and
-            current_close > liquidity_low * 1.002 and
-            volume.iloc[-1] > volume.iloc[-10:-1].mean() * 1.6):
-            return "CE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 14: VOLUME GAP IMBALANCE 🚨
-def detect_volume_gap_imbalance(df):
-    try:
-        volume = ensure_series(df['Volume'])
-        close = ensure_series(df['Close'])
-        
-        if len(volume) < 20:
-            return None
-            
-        current_volume = volume.iloc[-1]
-        avg_volume = volume.iloc[-20:].mean()
-        price_change = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]
-        
-        if (current_volume > avg_volume * VOLUME_GAP_IMBALANCE and
-            abs(price_change) > 0.004):
-            if price_change > 0:
-                return "CE"
-            else:
-                return "PE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 15: OTE (Optimal Trade Entry) 🚨
-def detect_ote_retracement(df):
-    try:
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
-        close = ensure_series(df['Close'])
-        
-        if len(close) < 15:
-            return None
-            
-        swing_high = high.iloc[-15:-5].max()
-        swing_low = low.iloc[-15:-5].min()
-        swing_range = swing_high - swing_low
-        
-        current_price = close.iloc[-1]
-        
-        for level in OTE_RETRACEMENT_LEVELS:
-            ote_level = swing_high - (swing_range * level)
-            
-            if (abs(current_price - ote_level) / ote_level < 0.0015 and
-                close.iloc[-1] > close.iloc[-2] and
-                close.iloc[-1] > close.iloc[-3]):
-                return "CE"
-                
-            ote_level = swing_low + (swing_range * level)
-            if (abs(current_price - ote_level) / ote_level < 0.0015 and
-                close.iloc[-1] < close.iloc[-2] and
-                close.iloc[-1] < close.iloc[-3]):
-                return "PE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 16: DEMAND AND SUPPLY ZONES 🚨
-def detect_demand_supply_zones(df):
-    try:
-        high = ensure_series(df['High'])
-        low = ensure_series(df['Low'])
-        close = ensure_series(df['Close'])
-        volume = ensure_series(df['Volume'])
-        
-        if len(close) < DEMAND_SUPPLY_ZONE_LOOKBACK + 5:
-            return None
-            
-        lookback = DEMAND_SUPPLY_ZONE_LOOKBACK
-        
-        demand_lows = low.rolling(3, center=True).min().dropna()
-        significant_demand = demand_lows[demand_lows == demand_lows.rolling(5).min()]
-        
-        supply_highs = high.rolling(3, center=True).max().dropna()
-        significant_supply = supply_highs[supply_highs == supply_highs.rolling(5).max()]
-        
-        current_price = close.iloc[-1]
-        
-        for zone in significant_demand.iloc[-5:]:
-            if (abs(current_price - zone) / zone < 0.002 and
-                close.iloc[-1] > close.iloc[-2] and
-                close.iloc[-1] > close.iloc[-3] and
-                volume.iloc[-1] > volume.iloc[-5:].mean() * 1.4):
-                return "CE"
-                
-        for zone in significant_supply.iloc[-5:]:
-            if (abs(current_price - zone) / zone < 0.002 and
-                close.iloc[-1] < close.iloc[-2] and
-                close.iloc[-1] < close.iloc[-3] and
-                volume.iloc[-1] > volume.iloc[-5:].mean() * 1.4):
-                return "PE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 6: PULLBACK REVERSAL 🚨
-def detect_pullback_reversal(df):
-    try:
-        close = ensure_series(df['Close'])
-        ema9 = ta.trend.EMAIndicator(close, 9).ema_indicator()
-        ema21 = ta.trend.EMAIndicator(close, 21).ema_indicator()
-        rsi = ta.momentum.RSIIndicator(close, 14).rsi()
-
-        if len(close) < 6:
-            return None
-
-        if (close.iloc[-6] > ema21.iloc[-6] and close.iloc[-3] <= ema21.iloc[-3] and 
-            close.iloc[-1] > ema9.iloc[-1] and rsi.iloc[-1] > 55 and 
-            close.iloc[-1] > close.iloc[-2]):
-            return "CE"
-
-        if (close.iloc[-6] < ema21.iloc[-6] and close.iloc[-3] >= ema21.iloc[-3] and 
-            close.iloc[-1] < ema9.iloc[-1] and rsi.iloc[-1] < 45 and 
-            close.iloc[-1] < close.iloc[-2]):
-            return "PE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 7: ORDERFLOW MIMIC LOGIC 🚨
-def mimic_orderflow_logic(df):
-    try:
-        close = ensure_series(df['Close']); high = ensure_series(df['High']); 
-        low = ensure_series(df['Low']); volume = ensure_series(df['Volume'])
-        rsi = ta.momentum.RSIIndicator(close, 14).rsi()
-
-        if len(close) < 4:
-            return None
-
-        body = (high - low).abs(); wick_top = (high - close).abs(); wick_bottom = (close - low).abs()
-        body_last = body.iloc[-1] if body.iloc[-1] != 0 else 1.0
-        wick_top_ratio = wick_top.iloc[-1] / body_last
-        wick_bottom_ratio = wick_bottom.iloc[-1] / body_last
-        vol_avg = volume.rolling(20).mean().iloc[-1] if len(volume) >= 20 else volume.mean()
-        vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg and vol_avg > 0 else 1)
-
-        if (close.iloc[-1] > close.iloc[-3] and rsi.iloc[-1] < rsi.iloc[-3] - 3 and 
-            wick_top_ratio > 0.7 and vol_ratio > 1.5):
-            return "PE"
-
-        if (close.iloc[-1] < close.iloc[-3] and rsi.iloc[-1] > rsi.iloc[-3] + 3 and 
-            wick_bottom_ratio > 0.7 and vol_ratio > 1.5):
-            return "CE"
-    except Exception:
-        return None
-    return None
-
-# 🚨 LAYER 17: BOTTOM-FISHING 🚨
-def detect_bottom_fishing(index, df):
-    try:
-        close = ensure_series(df['Close'])
-        low = ensure_series(df['Low'])
-        high = ensure_series(df['High'])
-        volume = ensure_series(df['Volume'])
-        if len(close) < 6: 
-            return None
-
-        bull_liq, bear_liq = institutional_liquidity_hunt(index, df)
-        last_close = float(close.iloc[-1])
-
-        wick = last_close - low.iloc[-1]
-        body = abs(close.iloc[-1] - close.iloc[-2])
-        vol_avg = volume.rolling(20).mean().iloc[-1] if len(volume) >= 20 else volume.mean()
-        vol_ratio = volume.iloc[-1] / (vol_avg if vol_avg > 0 else 1)
-
-        if wick > body * 2.0 and vol_ratio > 1.5:
-            for zone in bull_liq:
-                if zone and abs(last_close - zone) <= 3:
-                    return "CE"
-
-        bear_wick = high.iloc[-1] - last_close
-        if bear_wick > body * 2.0 and vol_ratio > 1.5:
-            for zone in bear_liq:
-                if zone and abs(last_close - zone) <= 3:
-                    return "PE"
-    except:
-        return None
-    return None
 
 # --------- INSTITUTIONAL FLOW CHECKS ---------
 def institutional_flow_signal(index, df5):
@@ -956,7 +809,7 @@ def institutional_flow_confirm(index, base_signal, df5):
 
     return True
 
-# --------- UPDATED STRATEGY CHECK WITH INSTITUTIONAL BLAST ---------
+# 🚨 **UPDATED INSTITUTIONAL SIGNAL ANALYSIS** 🚨
 def analyze_index_signal(index):
     df5 = fetch_index_data(index, "5m", "2d")
     if df5 is None:
@@ -968,111 +821,41 @@ def analyze_index_signal(index):
 
     last_close = float(close5.iloc[-1])
 
-    # 🚨 **PRIORITY 1: INSTITUTIONAL BLAST DETECTION (Highest Priority)**
+    # 🚨 **PRIORITY 1: INSTITUTIONAL STOP HUNT (Highest Probability)**
+    stop_hunt_signal = detect_stop_hunt(df5)
+    if stop_hunt_signal:
+        if institutional_momentum_confirmation(index, df5, stop_hunt_signal):
+            return stop_hunt_signal, df5, False, "institutional_stop_hunt"
+
+    # 🚨 **PRIORITY 2: LIQUIDITY ABSORPTION**
+    absorption_signal = detect_liquidity_absorption(df5)
+    if absorption_signal:
+        if institutional_momentum_confirmation(index, df5, absorption_signal):
+            return absorption_signal, df5, False, "liquidity_absorption"
+
+    # 🚨 **PRIORITY 3: FALSE BREAKOUT TRAP**
+    trap_signal = detect_false_breakout_trap(df5)
+    if trap_signal:
+        if institutional_momentum_confirmation(index, df5, trap_signal):
+            return trap_signal, df5, False, "false_breakout_trap"
+
+    # 🚨 **PRIORITY 4: IMPROVED LIQUIDITY ZONE (Your perfect entry)**
+    liquidity_signal = improved_liquidity_zone_strategy(index, df5)
+    if liquidity_signal:
+        if institutional_momentum_confirmation(index, df5, liquidity_signal):
+            return liquidity_signal, df5, False, "liquidity_zone"
+
+    # 🚨 **PRIORITY 5: INSTITUTIONAL BLAST (Real moves only)**
     blast_signal = detect_institutional_blast(df5)
     if blast_signal:
         if institutional_momentum_confirmation(index, df5, blast_signal):
             return blast_signal, df5, False, "institutional_blast"
 
-    # 🚨 **PRIORITY 2: VOLUME SPIKE BLAST**
-    volume_blast = detect_volume_spike_blast(df5)
-    if volume_blast:
-        if institutional_momentum_confirmation(index, df5, volume_blast):
-            return volume_blast, df5, False, "volume_spike_blast"
-
-    # 🚨 **PRIORITY 3: SWEEP ORDER DETECTION**
+    # 🚨 **PRIORITY 6: SWEEP ORDER DETECTION**
     sweep_signal = detect_sweep_orders(df5)
     if sweep_signal:
         if institutional_momentum_confirmation(index, df5, sweep_signal):
             return sweep_signal, df5, False, "sweep_order_detection"
-
-    # 🚨 **PRIORITY 4: INSTITUTIONAL PRICE ACTION (HIGH PRIORITY)**
-    institutional_pa_signal = institutional_price_action_signal(df5)
-    if institutional_pa_signal:
-        if institutional_momentum_confirmation(index, df5, institutional_pa_signal):
-            return institutional_pa_signal, df5, False, "institutional_price_action"
-
-    # 🚨 LAYER 0: OPENING-PLAY PRIORITY 🚨
-    try:
-        utc_now = datetime.utcnow()
-        ist_now = utc_now + timedelta(hours=5, minutes=30)
-        t = ist_now.time()
-        opening_range_bias = OPENING_PLAY_ENABLED and (OPENING_START <= t <= OPENING_END)
-        if opening_range_bias:
-            op_sig = institutional_opening_play(index, df5)
-            if op_sig:
-                fakeout = False
-                high_zone, low_zone = detect_liquidity_zone(df5, lookback=10)
-                try:
-                    if op_sig == "CE" and last_close >= high_zone: fakeout = True
-                    if op_sig == "PE" and last_close <= low_zone: fakeout = True
-                except:
-                    fakeout = False
-                return op_sig, df5, fakeout, "opening_play"
-    except Exception:
-        pass
-
-    # 🚨 LAYER 1: EXPIRY / GAMMA DETECTION 🚨
-    try:
-        gamma = detect_gamma_squeeze(index, df5)
-        if gamma:
-            if is_expiry_day_for_index(index) and EXPIRY_ACTIONABLE and not EXPIRY_INFO_ONLY:
-                cand = gamma['side']
-                oi_flow = oi_delta_flow_signal(index)
-                if institutional_flow_confirm(index, cand, df5):
-                    return cand, df5, False, "gamma_squeeze"
-                if gamma['confidence'] > 0.6 and oi_flow == cand:
-                    return cand, df5, False, "gamma_squeeze"
-    except Exception:
-        pass
-
-    # 🚨 LAYER 2: LIQUIDITY SWEEPS (High Priority) 🚨
-    sweep_sig = detect_liquidity_sweeps(df5)
-    if sweep_sig:
-        if institutional_momentum_confirmation(index, df5, sweep_sig):
-            return sweep_sig, df5, True, "liquidity_sweeps"
-
-    # 🚨 LAYER 14: VOLUME GAP IMBALANCE 🚨
-    volume_sig = detect_volume_gap_imbalance(df5)
-    if volume_sig:
-        if institutional_momentum_confirmation(index, df5, volume_sig):
-            return volume_sig, df5, False, "volume_gap_imbalance"
-
-    # 🚨 LAYER 15: OTE RETRACEMENT 🚨
-    ote_sig = detect_ote_retracement(df5)
-    if ote_sig:
-        if institutional_momentum_confirmation(index, df5, ote_sig):
-            return ote_sig, df5, False, "ote_retracement"
-
-    # 🚨 LAYER 16: DEMAND & SUPPLY ZONES 🚨
-    ds_sig = detect_demand_supply_zones(df5)
-    if ds_sig:
-        if institutional_momentum_confirmation(index, df5, ds_sig):
-            return ds_sig, df5, False, "demand_supply_zones"
-
-    # 🚨 LAYER 14: PULLBACK REVERSAL 🚨
-    pull_sig = detect_pullback_reversal(df5)
-    if pull_sig:
-        if institutional_momentum_confirmation(index, df5, pull_sig):
-            return pull_sig, df5, False, "pullback_reversal"
-
-    # 🚨 LAYER 15: ORDERFLOW MIMIC 🚨
-    flow_sig = mimic_orderflow_logic(df5)
-    if flow_sig:
-        if institutional_momentum_confirmation(index, df5, flow_sig):
-            return flow_sig, df5, False, "orderflow_mimic"
-
-    # 🚨 LAYER 16: BOTTOM-FISHING 🚨
-    bottom_sig = detect_bottom_fishing(index, df5)
-    if bottom_sig:
-        if institutional_momentum_confirmation(index, df5, bottom_sig):
-            return bottom_sig, df5, False, "bottom_fishing"
-
-    # Final fallback: Liquidity-based entry
-    bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
-    liquidity_side = liquidity_zone_entry_check(last_close, bull_liq, bear_liq)
-    if liquidity_side:
-        return liquidity_side, df5, False, "liquidity_zone"
 
     return None
 
@@ -1395,19 +1178,19 @@ def send_signal(index, side, df, fakeout, strategy_key):
     
     bull_liq, bear_liq = institutional_liquidity_hunt(index, df)
     
-    # 🚨 **ADJUSTED TARGETS FOR INSTITUTIONAL BLASTS** 🚨
+    # 🚨 **INSTITUTIONAL-SIZED TARGETS** 🚨
     if side == "CE":
         if bull_liq:
             nearest_bull_zone = max([z for z in bull_liq if z is not None])
             price_gap = nearest_bull_zone - signal_detection_price
         else:
-            price_gap = signal_detection_price * 0.008
+            price_gap = signal_detection_price * 0.01  # 1% for institutional
         
-        # LARGER TARGETS FOR BLASTS
-        if strategy_key in ["institutional_blast", "volume_spike_blast", "sweep_order_detection"]:
-            base_move = max(price_gap * 0.4, 60)  # 60 points for blasts
+        # LARGER TARGETS FOR INSTITUTIONAL MOVES
+        if strategy_key in ["institutional_stop_hunt", "institutional_blast"]:
+            base_move = max(price_gap * 0.5, 80)  # 80 points for high-probability
         else:
-            base_move = max(price_gap * 0.3, 40)  # 40 points for others
+            base_move = max(price_gap * 0.4, 60)  # 60 points for others
         
         targets = [
             round(entry + base_move * 1.0),
@@ -1415,20 +1198,20 @@ def send_signal(index, side, df, fakeout, strategy_key):
             round(entry + base_move * 2.8),
             round(entry + base_move * 4.0)
         ]
-        sl = round(entry - base_move * 0.8)
+        sl = round(entry - base_move * 0.6)  # Tighter SL for institutional
         
     else:
         if bear_liq:
             nearest_bear_zone = min([z for z in bear_liq if z is not None])
             price_gap = signal_detection_price - nearest_bear_zone
         else:
-            price_gap = signal_detection_price * 0.008
+            price_gap = signal_detection_price * 0.01  # 1% for institutional
         
-        # LARGER TARGETS FOR BLASTS
-        if strategy_key in ["institutional_blast", "volume_spike_blast", "sweep_order_detection"]:
-            base_move = max(price_gap * 0.4, 60)  # 60 points for blasts
+        # LARGER TARGETS FOR INSTITUTIONAL MOVES
+        if strategy_key in ["institutional_stop_hunt", "institutional_blast"]:
+            base_move = max(price_gap * 0.5, 80)  # 80 points for high-probability
         else:
-            base_move = max(price_gap * 0.3, 40)  # 40 points for others
+            base_move = max(price_gap * 0.4, 60)  # 60 points for others
         
         targets = [
             round(entry + base_move * 1.0),
@@ -1436,7 +1219,7 @@ def send_signal(index, side, df, fakeout, strategy_key):
             round(entry + base_move * 2.8),
             round(entry + base_move * 4.0)
         ]
-        sl = round(entry - base_move * 0.8)
+        sl = round(entry - base_move * 0.6)  # Tighter SL for institutional
     
     targets_str = "//".join(str(t) for t in targets) + "++"
     
@@ -1469,17 +1252,17 @@ def send_signal(index, side, df, fakeout, strategy_key):
     
     all_generated_signals.append(signal_data.copy())
     
-    # 🚨 **SPECIAL ALERT FOR INSTITUTIONAL BLASTS** 🚨
-    if strategy_key in ["institutional_blast", "volume_spike_blast"]:
-        msg = (f"💥 **INSTITUTIONAL BLAST DETECTED** 💥\n"
-               f"📈 {index} {strike} {side}\n"
+    # 🚨 **INSTITUTIONAL ALERTS** 🚨
+    if strategy_key in ["institutional_stop_hunt", "institutional_blast"]:
+        msg = (f"💥 **INSTITUTIONAL MOVE DETECTED** 💥\n"
+               f"🎯 {index} {strike} {side}\n"
                f"SYMBOL: {symbol}\n"
                f"ENTRY ABOVE: ₹{entry}\n"
                f"TARGETS: {targets_str}\n"
                f"STOP LOSS: ₹{sl}\n"
                f"STRATEGY: {strategy_name}\n"
                f"SIGNAL ID: {signal_id}\n"
-               f"⚠️ BIG MOVE EXPECTED - INSTITUTIONAL FLOW")
+               f"⚠️ INSTITUTIONAL FLOW - HIGH PROBABILITY")
     else:
         msg = (f"🟢 {index} {strike} {side}\n"
                f"SYMBOL: {symbol}\n"
@@ -1607,13 +1390,15 @@ while True:
             continue
         
         if not STARTED_SENT:
-            send_telegram("🚀 GIT ULTIMATE MASTER ALGO STARTED - 4 Indices Running\n"
-                         "✅ Institutional Blast Detection: ACTIVE\n"
-                         "✅ Volume Spike Detection: ACTIVE\n"
-                         "✅ Sweep Order Detection: ACTIVE\n"
-                         "✅ All Original Strategies Running\n"
-                         "✅ EOD Reports Working\n"
-                         "✅ STRICT EXPIRY ENFORCEMENT")
+            send_telegram("🚀 **INSTITUTIONAL ALGO ACTIVATED**\n"
+                         "✅ Institutional Stop Hunt: ACTIVE\n"
+                         "✅ Liquidity Absorption: ACTIVE\n"
+                         "✅ False Breakout Traps: ACTIVE\n"
+                         "✅ Improved Liquidity Zone: ACTIVE\n"
+                         "✅ Institutional Blast: ACTIVE\n"
+                         "✅ Sweep Orders: ACTIVE\n"
+                         "🎯 ONLY 6 HIGH-PROBABILITY STRATEGIES\n"
+                         "⚠️ SIGNALS BEFORE BIG MOVES ONLY")
             STARTED_SENT = True
             STOP_SENT = False
             MARKET_CLOSED_SENT = False

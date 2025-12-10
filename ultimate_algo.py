@@ -1,5 +1,5 @@
 #INDEXBASED + EOD NOT COMMING - FIXED VERSION
-# ENHANCED WITH INSTITUTIONAL MULTI-TIMEFRAME ANALYSIS
+# ENHANCED WITH PRACTICAL INSTITUTIONAL ANALYSIS
 
 import os
 import time
@@ -17,7 +17,7 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
-# ---------------- INSTITUTIONAL CONFIG ----------------
+# ---------------- PRACTICAL INSTITUTIONAL CONFIG ----------------
 OPENING_PLAY_ENABLED = True
 OPENING_START = dtime(9,15)
 OPENING_END = dtime(9,45)
@@ -29,10 +29,21 @@ GAMMA_VOL_SPIKE_THRESHOLD = 2.0
 DELTA_OI_RATIO = 2.0
 MOMENTUM_VOL_AMPLIFIER = 1.5
 
-# INSTITUTIONAL MULTI-TIMEFRAME CONFIG
-INSTITUTIONAL_TIMEFRAMES = ["1d", "1h", "15m", "5m"]  # Daily, Hourly, 15-min, 5-min
-INSTITUTIONAL_LOOKBACK_DAYS = 60  # 60 days for institutional analysis
-LIQUIDITY_THRESHOLD_MULTIPLIER = 0.5  # 50% of strike interval
+# PRACTICAL INSTITUTIONAL SETTINGS (ACTUALLY WORKS)
+INSTITUTIONAL_LOOKBACK = {
+    "daily": "60d",     # 60 days daily data (ACTUAL 60 DAYS)
+    "hourly": "20d",    # 20 days hourly data (ACTUAL 20 DAYS)
+    "15min": "10d",     # 10 days 15-min data (ACTUAL 10 DAYS)
+    "5min": "2d"        # 2 days 5-min data (KEEP AS IS)
+}
+
+# DYNAMIC THRESHOLDS (Based on index volatility)
+DYNAMIC_THRESHOLDS = {
+    "NIFTY": {"zone": 25, "target_multiplier": 1.0},
+    "BANKNIFTY": {"zone": 50, "target_multiplier": 1.5},
+    "SENSEX": {"zone": 50, "target_multiplier": 1.2},
+    "MIDCPNIFTY": {"zone": 12, "target_multiplier": 0.8}
+}
 
 # INSTITUTIONAL BLAST DETECTION
 BLAST_MOMENTUM_THRESHOLD = 0.006
@@ -83,6 +94,10 @@ daily_signals = []
 active_strikes = {}
 last_signal_time = {}
 signal_cooldown = 1200
+
+# --------- DATA CACHE FOR INSTITUTIONAL ANALYSIS ---------
+DATA_CACHE = {}
+CACHE_TIMEOUT = 300  # 5 minutes cache
 
 def initialize_strategy_tracking():
     global strategy_performance
@@ -173,9 +188,17 @@ def round_strike(index, price):
 def ensure_series(data):
     return data.iloc[:,0] if isinstance(data, pd.DataFrame) else data.squeeze()
 
-# --------- ENHANCED: FETCH INSTITUTIONAL DATA WITH MULTI-TIMEFRAME ---------
-def fetch_institutional_data(index, interval="5m", period="2d", extended_period=False):
-    """Enhanced data fetching for institutional analysis"""
+# --------- PRACTICAL INSTITUTIONAL DATA FETCHING WITH CACHE ---------
+def fetch_cached_data(index, interval="5m", period="2d"):
+    """Cached data fetching to prevent API spam"""
+    cache_key = f"{index}_{interval}_{period}"
+    
+    # Check cache
+    if cache_key in DATA_CACHE:
+        cached_time, cached_data = DATA_CACHE[cache_key]
+        if time.time() - cached_time < CACHE_TIMEOUT:
+            return cached_data
+    
     symbol_map = {
         "NIFTY": "^NSEI", 
         "BANKNIFTY": "^NSEBANK", 
@@ -184,32 +207,45 @@ def fetch_institutional_data(index, interval="5m", period="2d", extended_period=
     }
     
     try:
-        # For institutional analysis, fetch more data
-        if extended_period:
-            if interval == "1d":
-                period = "6mo"  # 6 months for daily
-            elif interval == "1h":
-                period = "60d"  # 60 days for hourly
-            elif interval == "15m":
-                period = "30d"  # 30 days for 15-min
-            elif interval == "5m":
-                period = "7d"   # 7 days for 5-min
-        
         df = yf.download(symbol_map[index], period=period, interval=interval, 
                         auto_adjust=True, progress=False, threads=True)
         
         if df.empty:
+            DATA_CACHE[cache_key] = (time.time(), None)
             return None
-            
-        # Calculate institutional indicators
-        df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
-        df['Volume_MA_20'] = df['Volume'].rolling(20).mean()
-        df['Volume_Ratio'] = df['Volume'] / df['Volume_MA_20'].replace(0, 1)
         
+        # Cache the data
+        DATA_CACHE[cache_key] = (time.time(), df)
         return df
+        
     except Exception as e:
         print(f"Error fetching {interval} data for {index}: {e}")
+        DATA_CACHE[cache_key] = (time.time(), None)
         return None
+
+def fetch_institutional_data(index, timeframe="full"):
+    """
+    PRACTICAL institutional data fetching
+    timeframe: "full" (all), "daily", "hourly", "15min", "5min"
+    """
+    if timeframe == "full":
+        # Get all timeframes
+        return {
+            "daily": fetch_cached_data(index, "1d", INSTITUTIONAL_LOOKBACK["daily"]),
+            "hourly": fetch_cached_data(index, "1h", INSTITUTIONAL_LOOKBACK["hourly"]),
+            "15min": fetch_cached_data(index, "15m", INSTITUTIONAL_LOOKBACK["15min"]),
+            "5min": fetch_cached_data(index, "5m", INSTITUTIONAL_LOOKBACK["5min"])
+        }
+    elif timeframe == "daily":
+        return fetch_cached_data(index, "1d", INSTITUTIONAL_LOOKBACK["daily"])
+    elif timeframe == "hourly":
+        return fetch_cached_data(index, "1h", INSTITUTIONAL_LOOKBACK["hourly"])
+    elif timeframe == "15min":
+        return fetch_cached_data(index, "15m", INSTITUTIONAL_LOOKBACK["15min"])
+    elif timeframe == "5min":
+        return fetch_cached_data(index, "5m", INSTITUTIONAL_LOOKBACK["5min"])
+    else:
+        return fetch_cached_data(index, "5m", "2d")
 
 # --------- LOAD TOKEN MAP ---------
 def load_token_map():
@@ -289,106 +325,99 @@ def get_option_symbol(index, expiry_str, strike, opttype):
     except Exception as e:
         return None
 
-# --------- ENHANCED: INSTITUTIONAL LIQUIDITY DETECTION ---------
-def detect_institutional_liquidity_zones(index, df_5min):
+# --------- PRACTICAL INSTITUTIONAL LIQUIDITY DETECTION ---------
+def detect_practical_liquidity_zones(index):
     """
-    INSTITUTIONAL MULTI-TIMEFRAME LIQUIDITY DETECTION
-    Analyzes Daily, Hourly, 15-min data to find real liquidity zones
+    PRACTICAL liquidity detection using ACTUALLY AVAILABLE data
     """
-    all_liquidity_levels = []
+    # Get cached institutional data
+    data = fetch_institutional_data(index, "full")
     
-    # 1. DAILY TIMEFRAME LIQUIDITY (6 months data)
-    df_daily = fetch_institutional_data(index, "1d", extended_period=True)
+    if not data or any(df is None for df in data.values()):
+        return [], []
+    
+    df_daily = data["daily"]
+    df_hourly = data["hourly"]
+    df_15min = data["15min"]
+    df_5min = data["5min"]
+    
+    liquidity_levels = []
+    
+    # 1. DAILY SWING POINTS (60 days)
     if df_daily is not None and len(df_daily) > 20:
-        # Daily swing highs/lows
-        daily_highs = df_daily['High'].rolling(5).max().dropna()
-        daily_lows = df_daily['Low'].rolling(5).min().dropna()
+        # Recent swing highs/lows (last 20 days)
+        daily_high_20 = df_daily['High'].rolling(20).max().iloc[-1]
+        daily_low_20 = df_daily['Low'].rolling(20).min().iloc[-1]
         
-        # Recent daily highs/lows (last 20 days)
-        recent_daily_high = daily_highs.iloc[-1] if len(daily_highs) > 0 else None
-        recent_daily_low = daily_lows.iloc[-1] if len(daily_lows) > 0 else None
-        
-        if recent_daily_high and not math.isnan(recent_daily_high):
-            all_liquidity_levels.append(float(recent_daily_high))
-        if recent_daily_low and not math.isnan(recent_daily_low):
-            all_liquidity_levels.append(float(recent_daily_low))
+        # Weekly pivots (last 5 days)
+        if len(df_daily) >= 5:
+            weekly_high = df_daily['High'].iloc[-5:].max()
+            weekly_low = df_daily['Low'].iloc[-5:].min()
+            weekly_pivot = (weekly_high + weekly_low + df_daily['Close'].iloc[-1]) / 3
+            
+            liquidity_levels.extend([daily_high_20, daily_low_20, weekly_high, weekly_low, weekly_pivot])
+        else:
+            liquidity_levels.extend([daily_high_20, daily_low_20])
     
-    # 2. HOURLY TIMEFRAME LIQUIDITY (60 days data)
-    df_hourly = fetch_institutional_data(index, "1h", extended_period=True)
-    if df_hourly is not None and len(df_hourly) > 48:  # At least 2 days of hourly data
-        # Hourly swing points
-        hourly_highs = df_hourly['High'].rolling(10).max().dropna()
-        hourly_lows = df_hourly['Low'].rolling(10).min().dropna()
+    # 2. HOURLY SWING POINTS (20 days = ~130 hourly candles)
+    if df_hourly is not None and len(df_hourly) > 48:
+        # Recent hourly extremes
+        hourly_high_24 = df_hourly['High'].iloc[-24:].max()
+        hourly_low_24 = df_hourly['Low'].iloc[-24:].min()
         
-        # Recent hourly highs/lows
-        recent_hourly_high = hourly_highs.iloc[-1] if len(hourly_highs) > 0 else None
-        recent_hourly_low = hourly_lows.iloc[-1] if len(hourly_lows) > 0 else None
+        # VWAP from hourly
+        if 'Volume' in df_hourly.columns:
+            vwap_hourly = (df_hourly['Volume'] * (df_hourly['High'] + df_hourly['Low'] + df_hourly['Close']) / 3).cumsum().iloc[-1] / df_hourly['Volume'].cumsum().iloc[-1]
+            liquidity_levels.append(vwap_hourly)
         
-        if recent_hourly_high and not math.isnan(recent_hourly_high):
-            all_liquidity_levels.append(float(recent_hourly_high))
-        if recent_hourly_low and not math.isnan(recent_hourly_low):
-            all_liquidity_levels.append(float(recent_hourly_low))
+        liquidity_levels.extend([hourly_high_24, hourly_low_24])
     
-    # 3. 15-MIN TIMEFRAME LIQUIDITY (30 days data)
-    df_15min = fetch_institutional_data(index, "15m", extended_period=True)
-    if df_15min is not None and len(df_15min) > 96:  # At least 24 hours of 15-min data
-        # 15-min swing points
-        min15_highs = df_15min['High'].rolling(20).max().dropna()
-        min15_lows = df_15min['Low'].rolling(20).min().dropna()
+    # 3. 15-MIN SWING POINTS (10 days = ~260 candles)
+    if df_15min is not None and len(df_15min) > 96:
+        # Session highs/lows (last 2 sessions = 26 candles each)
+        session1_high = df_15min['High'].iloc[-52:-26].max() if len(df_15min) >= 52 else df_15min['High'].iloc[-26:].max()
+        session1_low = df_15min['Low'].iloc[-52:-26].min() if len(df_15min) >= 52 else df_15min['Low'].iloc[-26:].min()
         
-        # Recent 15-min highs/lows
-        recent_min15_high = min15_highs.iloc[-1] if len(min15_highs) > 0 else None
-        recent_min15_low = min15_lows.iloc[-1] if len(min15_lows) > 0 else None
+        liquidity_levels.extend([session1_high, session1_low])
+    
+    # 4. CURRENT PRICE CONTEXT
+    if df_5min is not None and len(df_5min) > 0:
+        current_price = df_5min['Close'].iloc[-1]
         
-        if recent_min15_high and not math.isnan(recent_min15_high):
-            all_liquidity_levels.append(float(recent_min15_high))
-        if recent_min15_low and not math.isnan(recent_min15_low):
-            all_liquidity_levels.append(float(recent_min15_low))
-    
-    # 4. CURRENT 5-MIN DATA (from parameter)
-    if df_5min is not None and len(df_5min) > 20:
-        # 5-min swing points
-        min5_highs = df_5min['High'].rolling(10).max().dropna()
-        min5_lows = df_5min['Low'].rolling(10).min().dropna()
+        # Recent 5-min extremes
+        recent_high_10 = df_5min['High'].iloc[-10:].max()
+        recent_low_10 = df_5min['Low'].iloc[-10:].min()
         
-        # Recent 5-min highs/lows
-        recent_min5_high = min5_highs.iloc[-1] if len(min5_highs) > 0 else None
-        recent_min5_low = min5_lows.iloc[-1] if len(min5_lows) > 0 else None
-        
-        if recent_min5_high and not math.isnan(recent_min5_high):
-            all_liquidity_levels.append(float(recent_min5_high))
-        if recent_min5_low and not math.isnan(recent_min5_low):
-            all_liquidity_levels.append(float(recent_min5_low))
+        liquidity_levels.extend([current_price, recent_high_10, recent_low_10])
     
-    # 5. VWAP LEVELS (from all timeframes)
-    for timeframe, df in [("1d", df_daily), ("1h", df_hourly), ("15m", df_15min), ("5m", df_5min)]:
-        if df is not None and 'VWAP' in df.columns and len(df) > 0:
-            vwap = df['VWAP'].iloc[-1]
-            if not math.isnan(vwap):
-                all_liquidity_levels.append(float(vwap))
+    # Clean and sort levels
+    clean_levels = []
+    for level in liquidity_levels:
+        if pd.notna(level) and isinstance(level, (int, float)):
+            clean_levels.append(float(level))
     
-    # Remove duplicates and sort
-    unique_levels = sorted(list(set([round(l, 2) for l in all_liquidity_levels if l is not None and not math.isnan(l)])))
+    unique_levels = sorted(list(set(round(l, 2) for l in clean_levels)))
     
-    # Separate into bullish (support) and bearish (resistance) zones
-    current_price = float(df_5min['Close'].iloc[-1]) if df_5min is not None and len(df_5min) > 0 else None
-    
-    if current_price:
-        bullish_zones = [l for l in unique_levels if l < current_price]
-        bearish_zones = [l for l in unique_levels if l > current_price]
+    # Separate into support/resistance based on current price
+    if df_5min is not None and len(df_5min) > 0:
+        current_price = df_5min['Close'].iloc[-1]
+        support_levels = [l for l in unique_levels if l < current_price]
+        resistance_levels = [l for l in unique_levels if l > current_price]
     else:
-        bullish_zones = unique_levels[:len(unique_levels)//2]
-        bearish_zones = unique_levels[len(unique_levels)//2:]
+        # Split evenly if no current price
+        mid_point = len(unique_levels) // 2
+        support_levels = unique_levels[:mid_point]
+        resistance_levels = unique_levels[mid_point:]
     
-    return bullish_zones, bearish_zones
+    return support_levels[-3:], resistance_levels[:3]  # Return nearest 3 each
 
-# --------- ENHANCED: INSTITUTIONAL LIQUIDITY HUNT ---------
+# --------- PRACTICAL LIQUIDITY HUNT ---------
 def institutional_liquidity_hunt(index, df):
     """
-    ENHANCED with multi-timeframe analysis
+    PRACTICAL liquidity hunting with dynamic thresholds
     """
-    # Get institutional liquidity zones
-    bullish_zones, bearish_zones = detect_institutional_liquidity_zones(index, df)
+    # Get practical liquidity zones
+    support_zones, resistance_zones = detect_practical_liquidity_zones(index)
     
     # Current price
     last_close_val = None
@@ -401,7 +430,7 @@ def institutional_liquidity_hunt(index, df):
     except Exception:
         last_close_val = None
     
-    # Add OI-based strikes (your original logic)
+    # Add OI-based strikes
     if last_close_val is not None:
         highest_ce_oi_strike = round_strike(index, last_close_val + 50)
         highest_pe_oi_strike = round_strike(index, last_close_val - 50)
@@ -411,18 +440,14 @@ def institutional_liquidity_hunt(index, df):
     
     # Combine all liquidity sources
     bull_liquidity = []
-    if bullish_zones:
-        # Take nearest 3 bullish zones
-        nearest_bullish = sorted(bullish_zones, reverse=True)[:3]
-        bull_liquidity.extend(nearest_bullish)
+    if support_zones:
+        bull_liquidity.extend(support_zones)
     if highest_pe_oi_strike is not None:
         bull_liquidity.append(highest_pe_oi_strike)
     
     bear_liquidity = []
-    if bearish_zones:
-        # Take nearest 3 bearish zones
-        nearest_bearish = sorted(bearish_zones)[:3]
-        bear_liquidity.extend(nearest_bearish)
+    if resistance_zones:
+        bear_liquidity.extend(resistance_zones)
     if highest_ce_oi_strike is not None:
         bear_liquidity.append(highest_ce_oi_strike)
     
@@ -432,25 +457,16 @@ def institutional_liquidity_hunt(index, df):
     
     return bull_liquidity, bear_liquidity
 
-# --------- ENHANCED: LIQUIDITY ZONE ENTRY CHECK ---------
+# --------- PRACTICAL LIQUIDITY ZONE ENTRY CHECK ---------
 def liquidity_zone_entry_check(price, bull_liq, bear_liq, index):
     """
-    ENHANCED with dynamic threshold based on strike interval
+    PRACTICAL entry check with dynamic thresholds
     """
     if price is None or (isinstance(price, float) and math.isnan(price)):
         return None
     
     # Dynamic threshold based on index
-    if index == "NIFTY":
-        threshold = 25  # Half of 50 strike interval
-    elif index == "BANKNIFTY":
-        threshold = 50  # Half of 100 strike interval
-    elif index == "SENSEX":
-        threshold = 50  # Half of 100 strike interval
-    elif index == "MIDCPNIFTY":
-        threshold = 12  # Half of 25 strike interval
-    else:
-        threshold = 25
+    threshold = DYNAMIC_THRESHOLDS.get(index, {"zone": 25})["zone"]
     
     # Check bullish zones for CE signal
     for zone in bull_liq:
@@ -485,10 +501,10 @@ def liquidity_zone_entry_check(price, bull_liq, bear_liq, index):
     
     return None
 
-# --------- ENHANCED: INSTITUTIONAL MOMENTUM CONFIRMATION ---------
+# --------- PRACTICAL INSTITUTIONAL MOMENTUM CONFIRMATION ---------
 def institutional_momentum_confirmation(index, df, proposed_signal):
     """
-    ENHANCED: Check entry at PREVIOUS candle, not current
+    PRACTICAL momentum check - Entry at PREVIOUS candle
     """
     try:
         close = ensure_series(df['Close'])
@@ -500,45 +516,38 @@ def institutional_momentum_confirmation(index, df, proposed_signal):
         if len(close) < 5:
             return False
         
-        # ENTRY AT PREVIOUS CANDLE (Your fix)
-        # Check if previous candle showed initiation
+        # Check previous candle for initiation (NOT current candle)
         if proposed_signal == "CE":
-            # Previous candle should be bullish initiation
+            # Previous candle should show bullish initiation
             prev_close = close.iloc[-2]
             prev_open = open_price.iloc[-2]
-            prev_high = high.iloc[-2]
-            prev_low = low.iloc[-2]
+            prev_volume = volume.iloc[-2]
             
-            # Bullish candle with volume
+            # Bullish candle closing in upper half with volume
             if (prev_close > prev_open and  # Green candle
-                prev_close > (prev_high + prev_low) / 2 and  # Closed in upper half
-                volume.iloc[-2] > volume.iloc[-10:-2].mean() * 1.2):  # Volume surge
+                prev_close > (high.iloc[-2] + low.iloc[-2]) / 2 and  # Closed in upper half
+                prev_volume > volume.iloc[-10:-2].mean() * 1.2):  # Above average volume
                 return True
                 
         elif proposed_signal == "PE":
-            # Previous candle should be bearish initiation
+            # Previous candle should show bearish initiation
             prev_close = close.iloc[-2]
             prev_open = open_price.iloc[-2]
-            prev_high = high.iloc[-2]
-            prev_low = low.iloc[-2]
+            prev_volume = volume.iloc[-2]
             
-            # Bearish candle with volume
+            # Bearish candle closing in lower half with volume
             if (prev_close < prev_open and  # Red candle
-                prev_close < (prev_high + prev_low) / 2 and  # Closed in lower half
-                volume.iloc[-2] > volume.iloc[-10:-2].mean() * 1.2):  # Volume surge
+                prev_close < (high.iloc[-2] + low.iloc[-2]) / 2 and  # Closed in lower half
+                prev_volume > volume.iloc[-10:-2].mean() * 1.2):  # Above average volume
                 return True
         
-        # Fallback to original logic if above fails
+        # Fallback: Original trend check (but this is LATE entry)
         if proposed_signal == "CE":
             if not (close.iloc[-1] > close.iloc[-2] and close.iloc[-2] > close.iloc[-3]):
-                return False
-            if (high.iloc[-1] - low.iloc[-1]) < (high.iloc[-2] - low.iloc[-2]) * 0.7:
                 return False
                 
         elif proposed_signal == "PE":
             if not (close.iloc[-1] < close.iloc[-2] and close.iloc[-2] < close.iloc[-3]):
-                return False
-            if (high.iloc[-1] - low.iloc[-1]) < (high.iloc[-2] - low.iloc[-2]) * 0.7:
                 return False
                 
         return True
@@ -546,9 +555,7 @@ def institutional_momentum_confirmation(index, df, proposed_signal):
     except Exception:
         return False
 
-# 🚨 KEEPING ALL YOUR ORIGINAL STRATEGIES EXACTLY AS THEY WERE 🚨
-# (Only enhancing the liquidity detection part)
-
+# --------- KEEPING ALL YOUR ORIGINAL STRATEGIES (NO CHANGES) ---------
 # 🚨 NEW: INSTITUTIONAL BLAST DETECTOR 🚨
 def detect_institutional_blast(df):
     try:
@@ -948,7 +955,7 @@ def detect_bottom_fishing(index, df):
         return None
     return None
 
-# --------- ENHANCED: INSTITUTIONAL FLOW CHECKS ---------
+# --------- PRACTICAL INSTITUTIONAL FLOW CHECKS ---------
 def institutional_flow_signal(index, df5):
     try:
         last_close = float(ensure_series(df5["Close"]).iloc[-1])
@@ -967,7 +974,7 @@ def institutional_flow_signal(index, df5):
     elif last_close<prev_close and vol_latest>vol_avg*1.5:
         return "PE"
     
-    # ENHANCED: Use institutional liquidity zones
+    # Use practical liquidity zones
     bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
     try:
         if last_close >= max(bear_liq) if bear_liq else False:
@@ -998,13 +1005,13 @@ def oi_delta_flow_signal(index):
     except:
         return None
 
-# --------- ENHANCED: INSTITUTIONAL CONFIRMATION LAYER ---------
+# --------- PRACTICAL INSTITUTIONAL CONFIRMATION LAYER ---------
 def institutional_confirmation_layer(index, df5, base_signal):
     try:
         close = ensure_series(df5['Close'])
         last_close = float(close.iloc[-1])
         
-        # ENHANCED: Use institutional liquidity zones
+        # Use practical liquidity zones
         bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
         
         if base_signal == 'CE':
@@ -1034,9 +1041,9 @@ def institutional_flow_confirm(index, base_signal, df5):
 
     return True
 
-# --------- ENHANCED: UPDATED STRATEGY CHECK WITH INSTITUTIONAL IMPROVEMENTS ---------
+# --------- PRACTICAL STRATEGY CHECK ---------
 def analyze_index_signal(index):
-    df5 = fetch_institutional_data(index, "5m", extended_period=True)  # ENHANCED: 7 days data
+    df5 = fetch_institutional_data(index, "5min")
     if df5 is None:
         return None
 
@@ -1047,19 +1054,19 @@ def analyze_index_signal(index):
     last_close = float(close5.iloc[-1])
     prev_close = float(close5.iloc[-2])
 
-    # 🚨 NEW: INSTITUTIONAL BLAST DETECTION (HIGHEST PRIORITY)
+    # 🚨 INSTITUTIONAL BLAST DETECTION (HIGHEST PRIORITY)
     blast_signal = detect_institutional_blast(df5)
     if blast_signal:
         if institutional_momentum_confirmation(index, df5, blast_signal):
             return blast_signal, df5, False, "institutional_blast"
 
-    # 🚨 NEW: INSTITUTIONAL PRICE ACTION (HIGH PRIORITY) 🚨
+    # 🚨 INSTITUTIONAL PRICE ACTION (HIGH PRIORITY) 🚨
     institutional_pa_signal = institutional_price_action_signal(df5)
     if institutional_pa_signal:
         if institutional_momentum_confirmation(index, df5, institutional_pa_signal):
             return institutional_pa_signal, df5, False, "institutional_price_action"
 
-    # 🚨 LAYER 0: OPENING-PLAY PRIORITY 🚨
+    # 🚨 OPENING-PLAY PRIORITY 🚨
     try:
         utc_now = datetime.utcnow()
         ist_now = utc_now + timedelta(hours=5, minutes=30)
@@ -1069,7 +1076,6 @@ def analyze_index_signal(index):
             op_sig = institutional_opening_play(index, df5)
             if op_sig:
                 fakeout = False
-                # ENHANCED: Use institutional liquidity zones
                 bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
                 try:
                     if op_sig == "CE" and bear_liq and last_close >= max(bear_liq): 
@@ -1082,7 +1088,7 @@ def analyze_index_signal(index):
     except Exception:
         pass
 
-    # 🚨 LAYER 1: EXPIRY / GAMMA DETECTION 🚨
+    # 🚨 EXPIRY / GAMMA DETECTION 🚨
     try:
         gamma = detect_gamma_squeeze(index, df5)
         if gamma:
@@ -1096,51 +1102,51 @@ def analyze_index_signal(index):
     except Exception:
         pass
 
-    # 🚨 LAYER 2: LIQUIDITY SWEEPS (High Priority) 🚨
+    # 🚨 LIQUIDITY SWEEPS (High Priority) 🚨
     sweep_sig = detect_liquidity_sweeps(df5)
     if sweep_sig:
         if institutional_momentum_confirmation(index, df5, sweep_sig):
             return sweep_sig, df5, True, "liquidity_sweeps"
 
-    # 🚨 LAYER 14: VOLUME GAP IMBALANCE 🚨
+    # 🚨 VOLUME GAP IMBALANCE 🚨
     volume_sig = detect_volume_gap_imbalance(df5)
     if volume_sig:
         if institutional_momentum_confirmation(index, df5, volume_sig):
             return volume_sig, df5, False, "volume_gap_imbalance"
 
-    # 🚨 LAYER 15: OTE RETRACEMENT 🚨
+    # 🚨 OTE RETRACEMENT 🚨
     ote_sig = detect_ote_retracement(df5)
     if ote_sig:
         if institutional_momentum_confirmation(index, df5, ote_sig):
             return ote_sig, df5, False, "ote_retracement"
 
-    # 🚨 LAYER 16: DEMAND & SUPPLY ZONES 🚨
+    # 🚨 DEMAND & SUPPLY ZONES 🚨
     ds_sig = detect_demand_supply_zones(df5)
     if ds_sig:
         if institutional_momentum_confirmation(index, df5, ds_sig):
             return ds_sig, df5, False, "demand_supply_zones"
 
-    # 🚨 LAYER 14: PULLBACK REVERSAL 🚨
+    # 🚨 PULLBACK REVERSAL 🚨
     pull_sig = detect_pullback_reversal(df5)
     if pull_sig:
         if institutional_momentum_confirmation(index, df5, pull_sig):
             return pull_sig, df5, False, "pullback_reversal"
 
-    # 🚨 LAYER 15: ORDERFLOW MIMIC 🚨
+    # 🚨 ORDERFLOW MIMIC 🚨
     flow_sig = mimic_orderflow_logic(df5)
     if flow_sig:
         if institutional_momentum_confirmation(index, df5, flow_sig):
             return flow_sig, df5, False, "orderflow_mimic"
 
-    # 🚨 LAYER 16: BOTTOM-FISHING 🚨
+    # 🚨 BOTTOM-FISHING 🚨
     bottom_sig = detect_bottom_fishing(index, df5)
     if bottom_sig:
         if institutional_momentum_confirmation(index, df5, bottom_sig):
             return bottom_sig, df5, False, "bottom_fishing"
 
-    # ENHANCED: Final fallback: Institutional Liquidity-based entry
+    # PRACTICAL: Liquidity-based entry
     bull_liq, bear_liq = institutional_liquidity_hunt(index, df5)
-    liquidity_side = liquidity_zone_entry_check(last_close, bull_liq, bear_liq, index)  # Added index parameter
+    liquidity_side = liquidity_zone_entry_check(last_close, bull_liq, bear_liq, index)
     if liquidity_side:
         if institutional_momentum_confirmation(index, df5, liquidity_side):
             return liquidity_side, df5, False, "liquidity_zone"
@@ -1184,7 +1190,7 @@ def clear_completed_signal(signal_id):
     global active_strikes
     active_strikes = {k: v for k, v in active_strikes.items() if v['signal_id'] != signal_id}
 
-# --------- FIXED: ENHANCED TRADE MONITORING AND TRACKING ---------
+# --------- TRADE MONITORING AND TRACKING ---------
 active_trades = {}
 
 def calculate_pnl(entry, max_price, targets, targets_hit, sl):
@@ -1345,7 +1351,7 @@ def monitor_price_live(symbol, entry, targets, sl, fakeout, thread_id, strategy_
     thread.daemon = True
     thread.start()
 
-# --------- FIXED: WORKING EOD REPORT SYSTEM ---------
+# --------- WORKING EOD REPORT SYSTEM ---------
 def send_individual_signal_reports():
     global daily_signals, all_generated_signals
     
@@ -1436,19 +1442,18 @@ def send_individual_signal_reports():
     
     send_telegram("✅ END OF DAY REPORTS COMPLETED! See you tomorrow at 9:15 AM! 🚀")
 
-# 🚨 ENHANCED: UPDATED SIGNAL SENDING WITH INSTITUTIONAL IMPROVEMENTS 🚨
+# --------- PRACTICAL SIGNAL SENDING ---------
 def send_signal(index, side, df, fakeout, strategy_key):
     global signal_counter, all_generated_signals
     
     signal_detection_price = float(ensure_series(df["Close"]).iloc[-1])
     
-    # ENHANCED: Use dynamic strike selection based on institutional levels
+    # PRACTICAL strike selection
     bull_liq, bear_liq = institutional_liquidity_hunt(index, df)
     
     if side == "CE":
-        # For CE: Find nearest support level below price
+        # For CE: Find nearest support or round
         if bull_liq:
-            # Get the highest support level below current price
             supports_below = [s for s in bull_liq if s < signal_detection_price]
             if supports_below:
                 strike = max(supports_below)
@@ -1457,9 +1462,8 @@ def send_signal(index, side, df, fakeout, strategy_key):
         else:
             strike = round_strike(index, signal_detection_price)
     else:  # PE
-        # For PE: Find nearest resistance level above price
+        # For PE: Find nearest resistance or round
         if bear_liq:
-            # Get the lowest resistance level above current price
             resistances_above = [r for r in bear_liq if r > signal_detection_price]
             if resistances_above:
                 strike = min(resistances_above)
@@ -1485,39 +1489,11 @@ def send_signal(index, side, df, fakeout, strategy_key):
     
     entry = round(option_price)
     
-    high = ensure_series(df["High"])
-    low = ensure_series(df["Low"])
-    close = ensure_series(df["Close"])
+    # DYNAMIC target calculation
+    index_config = DYNAMIC_THRESHOLDS.get(index, {"target_multiplier": 1.0})
+    base_move = 40 * index_config["target_multiplier"]
     
-    # ENHANCED: Use institutional liquidity zones for target calculation
     if side == "CE":
-        # Find next resistance level for target calculation
-        if bear_liq:
-            # Get the nearest resistance above
-            resistances_above = [r for r in bear_liq if r > signal_detection_price]
-            if resistances_above:
-                nearest_resistance = min(resistances_above)
-                price_gap = nearest_resistance - signal_detection_price
-            else:
-                # Use dynamic gap based on index
-                if index == "NIFTY":
-                    price_gap = 100
-                elif index == "BANKNIFTY":
-                    price_gap = 200
-                elif index == "SENSEX":
-                    price_gap = 300
-                else:
-                    price_gap = 80
-        else:
-            # Fallback
-            if index == "NIFTY":
-                price_gap = 100
-            elif index == "BANKNIFTY":
-                price_gap = 200
-            else:
-                price_gap = 150
-        
-        base_move = max(price_gap * 0.3, 40)
         targets = [
             round(entry + base_move * 1.0),
             round(entry + base_move * 1.8),
@@ -1525,43 +1501,14 @@ def send_signal(index, side, df, fakeout, strategy_key):
             round(entry + base_move * 4.0)
         ]
         sl = round(entry - base_move * 0.8)
-        
     else:  # PE
-        # Find next support level for target calculation
-        if bull_liq:
-            # Get the nearest support below
-            supports_below = [s for s in bull_liq if s < signal_detection_price]
-            if supports_below:
-                nearest_support = max(supports_below)
-                price_gap = signal_detection_price - nearest_support
-            else:
-                # Use dynamic gap based on index
-                if index == "NIFTY":
-                    price_gap = 100
-                elif index == "BANKNIFTY":
-                    price_gap = 200
-                elif index == "SENSEX":
-                    price_gap = 300
-                else:
-                    price_gap = 80
-        else:
-            # Fallback
-            if index == "NIFTY":
-                price_gap = 100
-            elif index == "BANKNIFTY":
-                price_gap = 200
-            else:
-                price_gap = 150
-        
-        base_move = max(price_gap * 0.3, 40)
-        # FIXED: For PE, targets should be BELOW entry
         targets = [
             round(entry - base_move * 1.0),
             round(entry - base_move * 1.8),
             round(entry - base_move * 2.8),
             round(entry - base_move * 4.0)
         ]
-        sl = round(entry + base_move * 0.8)  # SL above for PE
+        sl = round(entry + base_move * 0.8)
     
     targets_str = "//".join(str(t) for t in targets) + "++"
     
@@ -1619,7 +1566,7 @@ def send_signal(index, side, df, fakeout, strategy_key):
     
     monitor_price_live(symbol, entry, targets, sl, fakeout, thread_id, strategy_name, signal_data)
 
-# --------- ENHANCED: UPDATED TRADE THREAD WITH INSTITUTIONAL IMPROVEMENTS ---------
+# --------- PRACTICAL TRADE THREAD ---------
 def trade_thread(index):
     result = analyze_index_signal(index)
     
@@ -1632,7 +1579,7 @@ def trade_thread(index):
         side, df, fakeout = result
         strategy_key = "unknown"
     
-    df5 = fetch_institutional_data(index, "5m", extended_period=True)  # ENHANCED: 7 days data
+    df5 = fetch_institutional_data(index, "5min")
     inst_signal = institutional_flow_signal(index, df5) if df5 is not None else None
     oi_signal = oi_delta_flow_signal(index)
     final_signal = oi_signal or inst_signal or side
@@ -1650,7 +1597,7 @@ def trade_thread(index):
     else:
         return
 
-# --------- ENHANCED: MAIN LOOP (KEPT INDICES ONLY) ---------
+# --------- PRACTICAL MAIN LOOP ---------
 def run_algo_parallel():
     if not is_market_open(): 
         return
@@ -1686,7 +1633,7 @@ def run_algo_parallel():
     for t in threads: 
         t.join()
 
-# --------- FIXED: START WITH WORKING EOD SYSTEM ---------
+# --------- START WITH WORKING EOD SYSTEM ---------
 STARTED_SENT = False
 STOP_SENT = False
 MARKET_CLOSED_SENT = False
@@ -1720,11 +1667,12 @@ while True:
             continue
         
         if not STARTED_SENT:
-            send_telegram("🚀 GIT ULTIMATE MASTER ALGO STARTED - 4 Indices Running\n"
-                         "✅ Institutional Multi-Timeframe Analysis (Daily/Hourly/15-min/5-min)\n"
-                         "✅ Enhanced Liquidity Zone Detection with 60-day lookback\n"
+            send_telegram("🚀 GIT ULTIMATE MASTER ALGO STARTED - PRACTICAL INSTITUTIONAL VERSION\n"
+                         "✅ Multi-Timeframe Analysis: 60-day Daily, 20-day Hourly, 10-day 15-min\n"
+                         "✅ Cached Data Fetching (No API Spam)\n"
+                         "✅ Dynamic Thresholds Based on Index Volatility\n"
                          "✅ Entry at Previous Candle (Not Current)\n"
-                         "✅ Dynamic Thresholds Based on Strike Intervals\n"
+                         "✅ Practical Liquidity Zone Detection\n"
                          "✅ EOD Reports Working\n"
                          "✅ STRICT EXPIRY ENFORCEMENT")
             STARTED_SENT = True
